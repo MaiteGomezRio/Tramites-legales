@@ -121,7 +121,6 @@ span[data-testid="stIconMaterial"] {
 /* =========================
    CHAT INPUT
    ========================= */
-
 /* Contenedor externo */
 div[data-testid="stChatInput"] {
   background: var(--primary-soft);
@@ -251,4 +250,61 @@ a:hover {
 
 h1 {
   margin-bottom: 0.3rem;
+}
+
+/*Hero central profesional*/
+.hero-container {
+  text-align: center;
+  padding: 60px 0 30px 0;
+}
+
+.hero-title {
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: var(--primary-dark);
+  margin-bottom: 10px;
+}
+
+.hero-subtitle {
+  font-size: 1.1rem;
+  color: #4B5563;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+/*Cards estilo oderno*/
+.cards-wrapper {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin: 40px 0;
+  flex-wrap: wrap;
+}
+
+.example-card {
+  background: white;
+  padding: 22px;
+  border-radius: 14px;
+  border: 1px solid #E5E7EB;
+  width: 260px;
+  text-align: left;
+  transition: 0.25s ease;
+  cursor: pointer;
+}
+
+.example-card:hover {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  transform: translateY(-4px);
+  border-color: var(--primary);
+}
+
+.example-card-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--primary-dark);
+}
+
+.example-card-desc {
+  font-size: 0.9rem;
+  color: #6B7280;
 }

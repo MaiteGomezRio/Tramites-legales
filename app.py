@@ -43,6 +43,48 @@ from ui.styles import load_css
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout=APP_LAYOUT)
 load_css(CSS_PATH)
 
+def mostrar_landing():
+    st.markdown("""
+        <div class="hero-container">
+            <div class="hero-title">Asistente de Trámites</div>
+            <div class="hero-subtitle">
+                Soy un asistente virtual de trámites legales.
+                Hazme preguntas relacionadas con tu situación y te orientaré
+                sobre el procedimiento adecuado.
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div class="cards-wrapper">
+            <div class="example-card">
+                <div class="example-card-title">📄 Reclamar una deuda</div>
+                <div class="example-card-desc">
+                    Te explico qué procedimiento corresponde según el tipo de deuda.
+                </div>
+            </div>
+            <div class="example-card">
+                <div class="example-card-title">⚖️ Solicitar abogado de oficio</div>
+                <div class="example-card-desc">
+                    Comprueba si cumples requisitos para justicia gratuita.
+                </div>
+            </div>
+            <div class="example-card">
+                <div class="example-card-title">🏢 Crear una empresa</div>
+                <div class="example-card-desc">
+                    Te orientamos sobre forma jurídica y trámites necesarios.
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+def mostrar_chat(active):
+    for m in active["messages"]:
+        with st.chat_message(normalize_role(m["role"]), avatar=ASSISTANT_AVATAR if m["role"] == "assistant" else USER_AVATAR):
+            st.markdown(m["content"])
+
+
 catalog_df, embeddings = load_catalog_and_embeddings()
 agents = load_agents()
 
@@ -83,7 +125,9 @@ with st.sidebar:
 
 active = get_active()
 
-st.title(APP_TITLE)
+
+
+#st.title(APP_TITLE)
 
 for msg in active["messages"]:
     role = normalize_role(msg.get("role", "user"))
@@ -104,6 +148,13 @@ for msg in active["messages"]:
                     hits=msg["debug"]["hits"],
                     umbral_ambiguedad=msg["debug"]["umbral"],
                 )
+
+if len(active["messages"]) <= 1:
+    # Solo mensaje inicial del sistema
+    mostrar_landing()
+else:
+    mostrar_chat(active)
+
 
 # ============================================
 # Inicialización de estado de desambiguación
