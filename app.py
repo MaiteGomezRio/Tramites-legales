@@ -1,98 +1,65 @@
+import pandas as pd
 import streamlit as st
 
-from agents.client import load_agents
-from agents.services import (
+from agents import (
     call_agente_clarificador,
     call_asistente_tramites,
     clasificar_con_desambiguacion,
+    detectar_tipo_mensaje_pendiente,
+    load_agents,
+    safe_agente_relevancia,
 )
 from config import (
-    APP_ICON,
-    APP_LAYOUT,
-    APP_TITLE,
     ASSISTANT_AVATAR,
     CSS_PATH,
+    MAX_INTENTOS_DESAMBIGUACION,
+    MAX_REINTENTOS_RELEVANCIA,
     MENSAJE_FUERA_DE_AMBITO,
+    MENSAJE_REFORMULAR,
     MENSAJE_SCORE_BAJO,
+    PAGE_ICON,
+    PAGE_LAYOUT,
+    PAGE_TITLE,
     UMBRAL_AMBIGUEDAD,
     USER_AVATAR,
 )
-from conversations.state import (
-    create_and_switch,
-    delete_conversation,
-    ensure_session_state,
-    get_active,
-    new_conversation,
-    set_active,
+from conversations import create_and_switch, get_active, init_conversations
+from core import (
+    attach_token_trace_to_last_assistant_message,
+    extract_prefixed_value,
+    format_no_clasificable_msg,
+    fuera_de_ambito_rapido,
+    is_no_relevante,
+    is_prompt_leak_attempt,
+    looks_like_injection,
+    make_title_from_text,
+    new_query_token_trace,
+    now_label,
 )
-from core.helpers import make_title_from_text, normalize_role, now_label
-from core.retrieval import load_catalog_and_embeddings, render_debug_info
-from ui.styles import load_css
+from core.retrieval import load_catalog
+from ui import load_css, render_chat_messages, render_sidebar
 
-st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout=APP_LAYOUT)
+
+st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=PAGE_LAYOUT)
 load_css(CSS_PATH)
 
-catalog_df, embeddings = load_catalog_and_embeddings()
-agents = load_agents()
+# Calentamos cache del catálogo (útil para diagnóstico y validación de dataset)
+load_catalog()
 
-ensure_session_state()
+init_conversations()
+render_sidebar()
 
-with st.sidebar:
-    st.image("assets/logo_junta_fondo_verde.jpeg", width="stretch")
-    st.markdown("## Conversaciones")
-
-    if st.button("➕ Nuevo chat", use_container_width=True):
-        create_and_switch()
-        st.rerun()
-
-    st.write("")
-
-    for c in sorted(st.session_state.conversations, key=lambda x: x["created_at"], reverse=True):
-        is_active = c["id"] == st.session_state.active_id
-        title = c["title"] or "Chat"
-        suffix = " ✅" if c.get("closed") else ""
-        label = f"{'👉 ' if is_active else ''}{title}{suffix}"
-        if st.button(label, key=f"open_{c['id']}", use_container_width=True):
-            set_active(c["id"])
-            st.rerun()
-
-    st.write("")
-    st.markdown("---")
-    active = get_active()
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        if st.button("Borrar chat", use_container_width=True):
-            delete_conversation(active["id"])
-            st.rerun()
-    with col_b:
-        if st.button("Borrar todo", use_container_width=True):
-            st.session_state.conversations = [new_conversation(seed_assistant=True)]
-            st.session_state.active_id = st.session_state.conversations[0]["id"]
-            st.rerun()
+AGENTS = load_agents()
 
 active = get_active()
-
-st.title(APP_TITLE)
-
-for msg in active["messages"]:
-    role = normalize_role(msg.get("role", "user"))
-    avatar = ASSISTANT_AVATAR if role == "assistant" else USER_AVATAR
-
-    with st.chat_message(role, avatar=avatar):
-        st.write(msg["content"])
-        if msg.get("t"):
-            st.caption(msg["t"])
-
-        if role == "assistant" and "debug" in msg:
-            with st.expander("ℹ️ Ver detalles de clasificación"):
-                render_debug_info(
-                    hits=msg["debug"]["hits"],
-                    umbral_ambiguedad=msg["debug"]["umbral"],
-                )
+st.title(PAGE_TITLE)
+render_chat_messages(active, assistant_avatar=ASSISTANT_AVATAR, user_avatar=USER_AVATAR)
 
 user_text = st.chat_input("Escribe tu consulta…")
 
 if user_text:
+    query_token_trace = new_query_token_trace()
+
     if active.get("closed"):
         create_and_switch()
         active = get_active()
@@ -100,47 +67,116 @@ if user_text:
     if active["title"] == "Nuevo chat":
         active["title"] = make_title_from_text(user_text)
 
-    user_msg = {
-        "role": "user",
-        "content": user_text,
-        "t": now_label(),
-    }
-    active["messages"].append(user_msg)
+    active["messages"].append(
+        {
+            "role": "user",
+            "content": user_text,
+            "t": now_label(),
+        }
+    )
 
+    # =========================
+    # PREGUNTAS + CLARIFICADOR
+    # =========================
     if active.get("pending_question"):
+        pregunta_sistema = active.get("pending_question") or ""
+        pending_hits = active.get("pending_hits")
+
         with st.spinner("Analizando tu respuesta…"):
-            salida, _ = call_agente_clarificador(
-                pregunta_sistema=active["pending_question"],
-                respuesta_usuario=user_text,
-                hits=active.get("pending_hits"),
-                agents=agents,
+            tipo_msg, contenido = detectar_tipo_mensaje_pendiente(
+                agents=AGENTS,
+                pregunta_sistema=pregunta_sistema,
+                mensaje_usuario=user_text,
+                token_trace=query_token_trace,
             )
 
-            if salida.startswith("ACLARACION:"):
-                texto = salida.replace("ACLARACION:", "").strip()
-                active["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": texto,
-                        "t": now_label(),
-                        "meta": "clarificador",
-                    }
+        if tipo_msg == "pregunta":
+            try:
+                salida, _ = call_agente_clarificador(
+                    agents=AGENTS,
+                    pregunta_sistema=pregunta_sistema,
+                    respuesta_usuario=contenido,
+                    hits=pending_hits if pending_hits is not None else pd.DataFrame(),
+                    token_trace=query_token_trace,
                 )
-                st.rerun()
+                texto = extract_prefixed_value(salida, "ACLARACION:") or salida.strip()
+            except Exception:
+                texto = (
+                    "Claro. Necesito una respuesta concreta para poder clasificar tu trámite.\n\n"
+                    f"{pregunta_sistema}"
+                )
 
-            if salida.startswith("RESPUESTA_VALIDA:"):
-                info = salida.replace("RESPUESTA_VALIDA:", "").strip()
-                user_text = f"{active['pending_question']}\n\nRespuesta del ciudadano: {info}"
-                active.pop("pending_question", None)
-                active.pop("pending_hits", None)
+            active["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": texto,
+                    "t": now_label(),
+                    "meta": "clarificador",
+                }
+            )
+            attach_token_trace_to_last_assistant_message(active, query_token_trace)
+            st.rerun()
 
-    with st.spinner("Analizando…"):
+        info = (contenido or "").strip() or user_text
+        user_text = f"{pregunta_sistema}\n\nRespuesta del ciudadano: {info}"
+        active["pending_question"] = None
+        active["pending_hits"] = None
+
+    # =========================
+    # SEGURIDAD + FUERA DE ÁMBITO (pre-clasificación)
+    # =========================
+    if looks_like_injection(user_text) or is_prompt_leak_attempt(user_text):
+        active["messages"].append(
+            {
+                "role": "assistant",
+                "content": MENSAJE_FUERA_DE_AMBITO,
+                "t": now_label(),
+            }
+        )
+        active["closed"] = True
+        active["pending_question"] = None
+        active["pending_hits"] = None
+        attach_token_trace_to_last_assistant_message(active, query_token_trace)
+        st.rerun()
+
+    if fuera_de_ambito_rapido(user_text):
+        active["messages"].append(
+            {
+                "role": "assistant",
+                "content": MENSAJE_FUERA_DE_AMBITO,
+                "t": now_label(),
+            }
+        )
+        active["closed"] = True
+        active["pending_question"] = None
+        active["pending_hits"] = None
+        attach_token_trace_to_last_assistant_message(active, query_token_trace)
+        st.rerun()
+
+    relevancia_precheck = safe_agente_relevancia(AGENTS, user_text, token_trace=query_token_trace)
+    if is_no_relevante(relevancia_precheck):
+        active["messages"].append(
+            {
+                "role": "assistant",
+                "content": MENSAJE_FUERA_DE_AMBITO,
+                "t": now_label(),
+            }
+        )
+        active["closed"] = True
+        active["pending_question"] = None
+        active["pending_hits"] = None
+        attach_token_trace_to_last_assistant_message(active, query_token_trace)
+        st.rerun()
+
+    # =========================
+    # CLASIFICACIÓN
+    # =========================
+    with st.spinner("Clasificando consulta…"):
         try:
             resultado = clasificar_con_desambiguacion(
                 message=user_text,
-                catalog_df=catalog_df,
-                embeddings=embeddings,
-                agents=agents,
+                agents=AGENTS,
+                token_trace=query_token_trace,
             )
         except Exception as e:
             resultado = {
@@ -153,12 +189,11 @@ if user_text:
 
     if tipo in ("directo", "desambiguado"):
         tramite = resultado["tramite"]
-        clasificador_text = f"✅ Identificado: **{tramite}**"
 
         active["messages"].append(
             {
                 "role": "assistant",
-                "content": clasificador_text,
+                "content": f"✅ Identificado: **{tramite}**",
                 "t": now_label(),
                 "debug": {
                     "hits": resultado["hits"],
@@ -169,11 +204,17 @@ if user_text:
 
         active["identified_tramite"] = tramite
         active["closed"] = True
-        active.pop("pending_question", None)
-        active.pop("pending_hits", None)
+        active["pending_question"] = None
+        active["pending_hits"] = None
+        active["desambiguacion_intentos"] = 0
+        active["relevancia_reintentos"] = 0
 
         try:
-            rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+            rag_text, _ = call_asistente_tramites(
+                agents=AGENTS,
+                tramite_nombre=tramite,
+                token_trace=query_token_trace,
+            )
         except Exception as e:
             rag_text = f"No se ha podido recuperar la información del trámite. {e}"
 
@@ -186,21 +227,38 @@ if user_text:
         )
 
     elif tipo == "necesita_info":
-        pregunta = resultado["pregunta"]
-        active["pending_question"] = pregunta
-        active["pending_hits"] = resultado["hits"]
+        active["relevancia_reintentos"] = 0
+        intentos = int(active.get("desambiguacion_intentos", 0)) + 1
+        active["desambiguacion_intentos"] = intentos
 
-        active["messages"].append(
-            {
-                "role": "assistant",
-                "content": pregunta,
-                "t": now_label(),
-                "debug": {
-                    "hits": resultado["hits"],
-                    "umbral": UMBRAL_AMBIGUEDAD,
-                },
-            }
-        )
+        if intentos > MAX_INTENTOS_DESAMBIGUACION:
+            mensaje = format_no_clasificable_msg(resultado.get("ambiguous_hits", resultado.get("hits")))
+            active["pending_question"] = None
+            active["pending_hits"] = None
+            active["desambiguacion_intentos"] = 0
+            active["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": mensaje,
+                    "t": now_label(),
+                }
+            )
+        else:
+            pregunta = resultado["pregunta"]
+            active["pending_question"] = pregunta
+            active["pending_hits"] = resultado["hits"]
+
+            active["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": pregunta,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": resultado["hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD,
+                    },
+                }
+            )
 
     elif tipo == "fuera_de_ambito":
         active["messages"].append(
@@ -210,25 +268,52 @@ if user_text:
                 "t": now_label(),
             }
         )
+        active["closed"] = True
+        active["pending_question"] = None
+        active["pending_hits"] = None
 
-    elif tipo in ("no_clasificable", "score_bajo"):
-        mensaje = resultado.get("mensaje", MENSAJE_SCORE_BAJO)
+    elif tipo == "score_bajo":
+        active["desambiguacion_intentos"] = 0
+        active["pending_question"] = None
+        active["pending_hits"] = None
+
+        if is_no_relevante(relevancia_precheck):
+            mensaje = MENSAJE_FUERA_DE_AMBITO
+            active["closed"] = True
+        else:
+            reintentos = int(active.get("relevancia_reintentos", 0)) + 1
+            active["relevancia_reintentos"] = reintentos
+            if reintentos < MAX_REINTENTOS_RELEVANCIA:
+                mensaje = MENSAJE_REFORMULAR
+            else:
+                mensaje = MENSAJE_SCORE_BAJO
+                active["relevancia_reintentos"] = 0
+
         active["messages"].append(
             {
                 "role": "assistant",
                 "content": mensaje,
+                "t": now_label(),
+            }
+        )
+
+    elif tipo == "no_clasificable":
+        active["messages"].append(
+            {
+                "role": "assistant",
+                "content": resultado.get("mensaje", MENSAJE_SCORE_BAJO),
                 "t": now_label(),
             }
         )
 
     else:
-        mensaje = resultado.get("mensaje", "Ha ocurrido un error inesperado.")
         active["messages"].append(
             {
                 "role": "assistant",
-                "content": mensaje,
+                "content": resultado.get("mensaje", "Ha ocurrido un error inesperado."),
                 "t": now_label(),
             }
         )
 
+    attach_token_trace_to_last_assistant_message(active, query_token_trace)
     st.rerun()

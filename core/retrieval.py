@@ -1,91 +1,98 @@
-from itertools import combinations
-
-import numpy as np
 import pandas as pd
 import streamlit as st
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizedQuery
 
-from config import CATALOG_PATH, CLIENT, EMB_MODEL, UMBRAL_RETRIEVAL
-
-
-def cosine_sim_matrix(query_vec, mat):
-    q = query_vec / (np.linalg.norm(query_vec) + 1e-12)
-    m = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12)
-    return m @ q
-
-
-def retrieve_top_k(message, df, embeddings, client, k=8, gap_max=UMBRAL_RETRIEVAL):
-    q_resp = client.embeddings.create(model=EMB_MODEL, input=message)
-    q_vec = np.array(q_resp.data[0].embedding, dtype=np.float32)
-    sims = cosine_sim_matrix(q_vec, embeddings)
-    idx_sorted = np.argsort(-sims)
-
-    top_score = sims[idx_sorted[0]]
-    mask = (top_score - sims[idx_sorted]) < gap_max
-    idx = idx_sorted[mask]
-
-    if len(idx) < 3:
-        idx = idx_sorted[:3]
-    elif len(idx) > k:
-        idx = idx[:k]
-
-    hits = df.iloc[idx].copy()
-    hits["score"] = sims[idx]
-    return hits
+from agents.client import get_embedding_client
+from config import (
+    CATALOG_XLSX,
+    EMB_MODEL,
+    INDEX_NAME,
+    SEARCH_DESCRIPCION_FIELD,
+    SEARCH_ENDPOINT,
+    SEARCH_QUERY_KEY,
+    SEARCH_TRAMITE_FIELD,
+    SEARCH_VECTOR_FIELD,
+    UMBRAL_RETRIEVAL,
+)
+from core.helpers import track_usage
 
 
-def embed_texts(texts, client, model=EMB_MODEL, batch_size=100):
-    vecs = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        resp = client.embeddings.create(model=model, input=batch)
-        vecs.extend([d.embedding for d in resp.data])
-    return np.array(vecs, dtype=np.float32)
+@st.cache_resource(show_spinner=False)
+def get_search_client() -> SearchClient:
+    if not SEARCH_ENDPOINT or not SEARCH_QUERY_KEY or not INDEX_NAME:
+        raise RuntimeError(
+            "Faltan variables de entorno para Azure AI Search: "
+            "AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_QUERY_KEY o AZURE_INDEX_NAME."
+        )
+    return SearchClient(
+        endpoint=SEARCH_ENDPOINT,
+        index_name=INDEX_NAME,
+        credential=AzureKeyCredential(SEARCH_QUERY_KEY),
+    )
 
 
 @st.cache_resource(show_spinner="Cargando catálogo de trámites…")
-def load_catalog_and_embeddings():
-    catalog_df = pd.read_excel(CATALOG_PATH)
+def load_catalog() -> pd.DataFrame:
+    catalog_df = pd.read_excel(CATALOG_XLSX)
     catalog_df = catalog_df.dropna(subset=["Trámite"]).reset_index(drop=True)
+    return catalog_df
 
-    catalog_df["embed_text"] = catalog_df.apply(
-        lambda r: f"{r['Trámite']}\n{r['Descripción']}".strip(),
-        axis=1,
+
+def retrieve_top_k(message: str, k: int = 8, gap_max: float = UMBRAL_RETRIEVAL, token_trace=None) -> pd.DataFrame:
+    emb_client = get_embedding_client()
+
+    q_resp = emb_client.embeddings.create(model=EMB_MODEL, input=message)
+    track_usage(token_trace, "retrieval_query_embedding", getattr(q_resp, "usage", None))
+    q_vec = q_resp.data[0].embedding
+
+    vq = VectorizedQuery(
+        vector=q_vec,
+        fields=SEARCH_VECTOR_FIELD,
     )
 
-    embeddings = embed_texts(catalog_df["embed_text"].tolist(), CLIENT)
+    results = get_search_client().search(
+        search_text="",
+        vector_queries=[vq],
+        select=[SEARCH_TRAMITE_FIELD, SEARCH_DESCRIPCION_FIELD],
+        top=k,
+    )
 
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    emb_norm = embeddings / (norms + 1e-12)
+    rows = []
+    for r in results:
+        try:
+            score = float(r.get("@search.score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
 
-    sim_matrix = emb_norm @ emb_norm.T
-
-    pairs = []
-    n = len(catalog_df)
-    for i, j in combinations(range(n), 2):
-        pairs.append(
+        rows.append(
             {
-                "Trámite_A": catalog_df.iloc[i]["Trámite"],
-                "Trámite_B": catalog_df.iloc[j]["Trámite"],
-                "similitud": sim_matrix[i, j],
+                "Trámite": r.get(SEARCH_TRAMITE_FIELD),
+                "Descripción": r.get(SEARCH_DESCRIPCION_FIELD),
+                "score": score,
             }
         )
 
-    pairs_df = pd.DataFrame(pairs).sort_values("similitud", ascending=False)
+    hits = pd.DataFrame(rows, columns=["Trámite", "Descripción", "score"])
+    if hits.empty:
+        return hits
 
-    print("=== TOP 5 PARES MÁS SIMILARES ===\n")
-    for _, row in pairs_df.head(5).iterrows():
-        print(f"  {row['similitud']:.4f}  |  {row['Trámite_A']}")
-        print(f"           |  {row['Trámite_B']}")
-        print()
+    hits = hits.sort_values("score", ascending=False).reset_index(drop=True)
+    hits = (
+        hits.dropna(subset=["Trámite"])
+        .drop_duplicates(subset=["Trámite"], keep="first")
+        .reset_index(drop=True)
+    )
+    if hits.empty:
+        return pd.DataFrame(columns=["Trámite", "Descripción", "score"])
 
-    return catalog_df, emb_norm
+    top_score = float(hits.loc[0, "score"])
+    filtered = hits[(top_score - hits["score"].astype(float)) < gap_max].copy()
 
+    if len(filtered) < 3:
+        filtered = hits.head(min(3, len(hits))).copy()
+    elif len(filtered) > k:
+        filtered = filtered.head(k).copy()
 
-def render_debug_info(hits, umbral_ambiguedad):
-    top_score = hits.iloc[0]["score"]
-
-    st.markdown("**Candidatos evaluados:**")
-    for _, row in hits.iterrows():
-        gap = top_score - row["score"]
-        marker = " ⚠️ ambiguo" if gap < umbral_ambiguedad else ""
-        st.markdown(f"- `{row['score']:.4f}` · **{row['Trámite']}**{marker}")
+    return filtered

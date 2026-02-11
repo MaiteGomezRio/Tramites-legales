@@ -1,41 +1,42 @@
 import time
+from typing import Dict, Tuple
 
 import pandas as pd
 
 from config import (
     ASISTENTE_AGENT_NAME,
     CLARIFICADOR_AGENT_NAME,
-    CLIENT,
-    CLASIFICADOR_AGENT_NAME,
     DESAMBIGUADOR_AGENT_NAME,
+    PREGUNTAS_AGENT_NAME,
     RELEVANCIA_AGENT_NAME,
     UMBRAL_AMBIGUEDAD,
     UMBRAL_RETRIEVAL,
     UMBRAL_SCORE_MINIMO,
 )
-from core.helpers import try_parse_json
+from core.helpers import (
+    extract_prefixed_value,
+    is_prompt_leak_attempt,
+    looks_like_injection,
+    track_usage,
+)
 from core.retrieval import retrieve_top_k
 
 
-def call_clasificador(messages, agents):
-    start = time.time()
-
-    response = agents["clasificador"].responses.create(
-        input=messages,
-        extra_body={"agent": {"name": CLASIFICADOR_AGENT_NAME, "type": "agent_reference"}},
-    )
-
-    raw_text = getattr(response, "output_text", "") or ""
-    parsed = try_parse_json(raw_text)
-    ms = int((time.time() - start) * 1000)
-
-    if isinstance(parsed, dict) and parsed.get("status") == "identified":
-        return "identified", parsed, ms
-
-    return "text", raw_text.strip(), ms
+def _agent_client(agents: Dict, key: str):
+    entry = agents.get(key)
+    if isinstance(entry, dict):
+        return entry.get("client")
+    return entry
 
 
-def call_asistente_tramites(tramite_nombre: str, agents):
+def _agent_name(agents: Dict, key: str, default_name: str) -> str:
+    entry = agents.get(key)
+    if isinstance(entry, dict):
+        return (entry.get("name") or default_name).strip()
+    return default_name
+
+
+def call_asistente_tramites(agents: Dict, tramite_nombre: str, token_trace=None) -> Tuple[str, int]:
     start = time.time()
 
     prompt = (
@@ -43,17 +44,23 @@ def call_asistente_tramites(tramite_nombre: str, agents):
         "Proporciona información clara y orientativa para un ciudadano."
     )
 
-    response = agents["asistente"].responses.create(
+    response = _agent_client(agents, "asistente").responses.create(
         input=[{"role": "user", "content": prompt}],
-        extra_body={"agent": {"name": ASISTENTE_AGENT_NAME, "type": "agent_reference"}},
+        extra_body={
+            "agent": {
+                "name": _agent_name(agents, "asistente", ASISTENTE_AGENT_NAME),
+                "type": "agent_reference",
+            }
+        },
     )
+    track_usage(token_trace, "chat_asistente_tramites", getattr(response, "usage", None))
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
     return text.strip(), ms
 
 
-def call_agente_desambiguador(message: str, ambiguous_hits: pd.DataFrame, agents):
+def call_agente_desambiguador(agents: Dict, message: str, ambiguous_hits: pd.DataFrame, token_trace=None) -> Tuple[str, int]:
     start = time.time()
 
     candidates_detail = "\n\n".join(
@@ -64,46 +71,49 @@ def call_agente_desambiguador(message: str, ambiguous_hits: pd.DataFrame, agents
 
     prompt = (
         "MENSAJE DEL CIUDADANO:\n"
-        f'"""{message}"""\n\n'
+        f"\"\"\"{message}\"\"\"\n\n"
         "CATEGORÍAS AMBIGUAS:\n"
         f"{candidates_detail}"
     )
 
-    response = agents["desambiguador"].responses.create(
+    response = _agent_client(agents, "desambiguador").responses.create(
         input=[{"role": "user", "content": prompt}],
         extra_body={
             "agent": {
-                "name": DESAMBIGUADOR_AGENT_NAME,
+                "name": _agent_name(agents, "desambiguador", DESAMBIGUADOR_AGENT_NAME),
                 "type": "agent_reference",
             }
         },
     )
+    track_usage(token_trace, "chat_desambiguador", getattr(response, "usage", None))
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
-
     return text.strip(), ms
 
 
 def clasificar_con_desambiguacion(
-    message,
-    catalog_df,
-    embeddings,
-    agents,
-    k=8,
-    gap_max=UMBRAL_RETRIEVAL,
-    umbral=UMBRAL_AMBIGUEDAD,
-    umbral_minimo=UMBRAL_SCORE_MINIMO,
+    message: str,
+    agents: Dict,
+    k: int = 8,
+    gap_max: float = UMBRAL_RETRIEVAL,
+    umbral: float = UMBRAL_AMBIGUEDAD,
+    umbral_minimo: float = UMBRAL_SCORE_MINIMO,
+    token_trace=None,
 ):
-    hits = retrieve_top_k(message, catalog_df, embeddings, CLIENT, k=k, gap_max=gap_max)
+    hits = retrieve_top_k(
+        message=message,
+        k=k,
+        gap_max=gap_max,
+        token_trace=token_trace,
+    )
     scores = hits["score"].values
 
+    if len(scores) == 0:
+        return {"tramite": None, "tipo": "score_bajo", "hits": hits}
+
     if scores[0] < umbral_minimo:
-        return {
-            "tramite": None,
-            "tipo": "score_bajo",
-            "hits": hits,
-        }
+        return {"tramite": None, "tipo": "score_bajo", "hits": hits}
 
     ambiguous_mask = (scores[0] - scores) < umbral
     n_ambiguous = ambiguous_mask.sum()
@@ -111,13 +121,18 @@ def clasificar_con_desambiguacion(
     if n_ambiguous > 1:
         ambiguous_hits = hits[ambiguous_mask]
 
-        print(f"Ambigüedad detectada: {n_ambiguous} candidatos con diferencia < {umbral}")
+        print(f"  Ambigüedad detectada: {n_ambiguous} candidatos con diferencia < {umbral}")
         for _, row in ambiguous_hits.iterrows():
-            print(f"{row['score']:.4f} | {row['Trámite']}")
+            print(f"   {row['score']:.4f} | {row['Trámite']}")
 
-        resultado, ms = call_agente_desambiguador(message=message, ambiguous_hits=ambiguous_hits, agents=agents)
+        resultado, ms = call_agente_desambiguador(
+            agents=agents,
+            message=message,
+            ambiguous_hits=ambiguous_hits,
+            token_trace=token_trace,
+        )
 
-        print(f"Resultado del agente de desambiguación (en {ms} ms): {resultado}")
+        print(f"  Resultado del agente de desambiguación (en {ms} ms): {resultado}")
 
         if resultado.startswith("CLASIFICACION:"):
             tramite = resultado.replace("CLASIFICACION:", "").strip()
@@ -152,54 +167,129 @@ def clasificar_con_desambiguacion(
     }
 
 
-def call_agente_relevancia(message: str, agents):
+def call_agente_relevancia(agents: Dict, message: str, token_trace=None) -> Tuple[str, int]:
     start = time.time()
 
-    prompt = "MENSAJE DEL USUARIO:\n" f'"""{message}"""'
+    prompt = (
+        "MENSAJE DEL USUARIO:\n"
+        f"\"\"\"{message}\"\"\""
+    )
 
-    response = agents["relevancia"].responses.create(
+    response = _agent_client(agents, "relevancia").responses.create(
         input=[{"role": "user", "content": prompt}],
         extra_body={
             "agent": {
-                "name": RELEVANCIA_AGENT_NAME,
+                "name": _agent_name(agents, "relevancia", RELEVANCIA_AGENT_NAME),
                 "type": "agent_reference",
             }
         },
     )
+    track_usage(token_trace, "chat_relevancia", getattr(response, "usage", None))
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
-
     return text.strip(), ms
 
 
-def call_agente_clarificador(pregunta_sistema: str, respuesta_usuario: str, hits: pd.DataFrame, agents):
+def safe_agente_relevancia(agents: Dict, message: str, token_trace=None) -> str:
+    if looks_like_injection(message) or is_prompt_leak_attempt(message):
+        return "NO_RELEVANTE"
+    try:
+        text, _ = call_agente_relevancia(agents=agents, message=message, token_trace=token_trace)
+        return text
+    except Exception as e:
+        print(f"[WARN] agente_relevancia falló ({type(e).__name__}). Se trata como NO_RELEVANTE.")
+        return "NO_RELEVANTE"
+
+
+def call_agente_preguntas(agents: Dict, pregunta_sistema: str, mensaje_usuario: str, token_trace=None) -> Tuple[str, int]:
+    start = time.time()
+
+    prompt = (
+        "PREGUNTA DEL SISTEMA:\n"
+        f"\"\"\"{pregunta_sistema}\"\"\"\n\n"
+        "NUEVO MENSAJE DEL USUARIO:\n"
+        f"\"\"\"{mensaje_usuario}\"\"\""
+    )
+
+    response = _agent_client(agents, "preguntas").responses.create(
+        input=[{"role": "user", "content": prompt}],
+        extra_body={
+            "agent": {
+                "name": _agent_name(agents, "preguntas", PREGUNTAS_AGENT_NAME),
+                "type": "agent_reference",
+            }
+        },
+    )
+    track_usage(token_trace, "chat_preguntas", getattr(response, "usage", None))
+
+    text = getattr(response, "output_text", "") or ""
+    ms = int((time.time() - start) * 1000)
+    return text.strip(), ms
+
+
+def call_agente_clarificador(
+    agents: Dict,
+    pregunta_sistema: str,
+    respuesta_usuario: str,
+    hits: pd.DataFrame,
+    token_trace=None,
+) -> Tuple[str, int]:
     start = time.time()
 
     tramites_contexto = "\n\n".join(
-        f"- {row['Trámite']}\n  {row['Descripción']}" for _, row in hits.iterrows()
+        f"- {row['Trámite']}\n  {row['Descripción']}"
+        for _, row in hits.iterrows()
     )
 
     prompt = (
         "PREGUNTA DEL SISTEMA:\n"
-        f'"""{pregunta_sistema}"""\n\n'
+        f"\"\"\"{pregunta_sistema}\"\"\"\n\n"
         "RESPUESTA DEL CIUDADANO:\n"
-        f'"""{respuesta_usuario}"""\n\n'
+        f"\"\"\"{respuesta_usuario}\"\"\"\n\n"
         "TRÁMITES RELACIONADOS:\n"
         f"{tramites_contexto}"
     )
 
-    response = agents["clarificador"].responses.create(
+    response = _agent_client(agents, "clarificador").responses.create(
         input=[{"role": "user", "content": prompt}],
         extra_body={
             "agent": {
-                "name": CLARIFICADOR_AGENT_NAME,
+                "name": _agent_name(agents, "clarificador", CLARIFICADOR_AGENT_NAME),
                 "type": "agent_reference",
             }
         },
     )
+    track_usage(token_trace, "chat_clarificador", getattr(response, "usage", None))
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
-
     return text.strip(), ms
+
+
+def detectar_tipo_mensaje_pendiente(agents: Dict, pregunta_sistema: str, mensaje_usuario: str, token_trace=None):
+    try:
+        salida, _ = call_agente_preguntas(
+            agents=agents,
+            pregunta_sistema=pregunta_sistema,
+            mensaje_usuario=mensaje_usuario,
+            token_trace=token_trace,
+        )
+    except Exception:
+        salida = ""
+
+    respuesta_val = extract_prefixed_value(salida, "RESPUESTA:") or extract_prefixed_value(
+        salida, "RESPUESTA_VALIDA:"
+    )
+    if respuesta_val:
+        return "respuesta", respuesta_val
+
+    pregunta_val = extract_prefixed_value(salida, "PREGUNTA:") or extract_prefixed_value(
+        salida, "ACLARACION:"
+    )
+    if pregunta_val:
+        return "pregunta", pregunta_val
+
+    if "?" in (mensaje_usuario or ""):
+        return "pregunta", mensaje_usuario
+    return "respuesta", mensaje_usuario

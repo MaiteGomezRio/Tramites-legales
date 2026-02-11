@@ -3,12 +3,11 @@ import uuid
 
 import streamlit as st
 
+from config import INITIAL_ASSISTANT_GREETING
 from core.helpers import now_label
 
-AUTO_CLOSE_STATUSES = {"ok", "no_match"}
 
-
-def new_conversation(seed_assistant=True):
+def new_conversation(seed_assistant: bool = True):
     cid = str(uuid.uuid4())
     convo = {
         "id": cid,
@@ -18,19 +17,24 @@ def new_conversation(seed_assistant=True):
         "last_ms": None,
         "closed": False,
         "created_at": time.time(),
+        "pending_question": None,
+        "pending_hits": None,
+        "desambiguacion_intentos": 0,
+        "relevancia_reintentos": 0,
     }
+
     if seed_assistant:
         convo["messages"].append(
             {
                 "role": "assistant",
-                "content": "Hola 👋 Cuéntame tu caso y te digo el trámite del catálogo. Si me falta info, te haré preguntas para afinar.",
+                "content": INITIAL_ASSISTANT_GREETING,
                 "t": now_label(),
             }
         )
     return convo
 
 
-def ensure_session_state():
+def init_conversations() -> None:
     if "conversations" not in st.session_state:
         first = new_conversation(seed_assistant=True)
         st.session_state.conversations = [first]
@@ -48,11 +52,11 @@ def get_active():
     return c
 
 
-def set_active(cid: str):
+def set_active(cid: str) -> None:
     st.session_state.active_id = cid
 
 
-def delete_conversation(cid: str):
+def delete_conversation(cid: str) -> None:
     st.session_state.conversations = [c for c in st.session_state.conversations if c["id"] != cid]
     if not st.session_state.conversations:
         c = new_conversation(seed_assistant=True)
@@ -62,7 +66,7 @@ def delete_conversation(cid: str):
         st.session_state.active_id = st.session_state.conversations[0]["id"]
 
 
-def create_and_switch():
+def create_and_switch() -> None:
     c = new_conversation(seed_assistant=True)
     st.session_state.conversations.insert(0, c)
     st.session_state.active_id = c["id"]
