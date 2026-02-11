@@ -15,6 +15,7 @@ ASISTENTE_AGENT_NAME = os.getenv("AZURE_ASISTENTE_AGENT_NAME", "AsistenteTramite
 DESAMBIGUADOR_AGENT_NAME = os.getenv("AZURE_DESAMBIGUADOR_AGENT_NAME", "DesambiguadorTramites")
 RELEVANCIA_AGENT_NAME = os.getenv("AZURE_RELEVANCIA_AGENT_NAME", "RelevanciaRespuestaTramites")
 CLARIFICADOR_AGENT_NAME = os.getenv("AZURE_CLARIFICADOR_AGENT_NAME", "ClarificadorTramites")
+PREGUNTAS_AGENT_NAME = os.getenv("AZURE_PREGUNTAS_AGENT_NAME", "PreguntasTramites")
 
 ASSISTANT_AVATAR = "assets/logo_junta_avatar.png"
 USER_AVATAR = "assets/user_avatar.png"
@@ -45,6 +46,11 @@ MENSAJE_FUERA_DE_AMBITO = (
     "Este es un asistente de clasificación de trámites judiciales. "
     "Solo podemos ayudarle con consultas relacionadas con procedimientos legales y judiciales. "
     "Si tiene alguna consulta de este tipo, por favor reformule su mensaje."
+)
+
+MENSAJE_ERROR_RELEVANCIA = (
+    "He tenido dificultades para evaluar la relevancia de tu consulta. "
+    "¿Podrías reformularla o aportar más detalles?"
 )
 
 EMB_MODEL = "text-embedding-3-small"

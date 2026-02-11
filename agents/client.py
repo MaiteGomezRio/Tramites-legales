@@ -9,6 +9,7 @@ from config import (
     CLASIFICADOR_AGENT_NAME,
     DESAMBIGUADOR_AGENT_NAME,
     RELEVANCIA_AGENT_NAME,
+    PREGUNTAS_AGENT_NAME
 )
 
 
@@ -44,4 +45,5 @@ def load_agents():
         "desambiguador": get_agent(DESAMBIGUADOR_AGENT_NAME),
         "clarificador": get_agent(CLARIFICADOR_AGENT_NAME),
         "relevancia": get_agent(RELEVANCIA_AGENT_NAME),
+        "preguntas": get_agent(PREGUNTAS_AGENT_NAME),
     }

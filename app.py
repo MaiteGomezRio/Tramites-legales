@@ -3,8 +3,10 @@ import streamlit as st
 from agents.client import load_agents
 from agents.services import (
     call_agente_clarificador,
+    call_agente_desambiguador,
+    call_agente_relevancia,
     call_asistente_tramites,
-    clasificar_con_desambiguacion,
+    call_agente_preguntas
 )
 from config import (
     APP_ICON,
@@ -12,9 +14,12 @@ from config import (
     APP_TITLE,
     ASSISTANT_AVATAR,
     CSS_PATH,
+    CLIENT,
     MENSAJE_FUERA_DE_AMBITO,
     MENSAJE_SCORE_BAJO,
+    MENSAJE_ERROR_RELEVANCIA,
     UMBRAL_AMBIGUEDAD,
+    UMBRAL_SCORE_MINIMO,
     USER_AVATAR,
 )
 from conversations.state import (
@@ -26,7 +31,7 @@ from conversations.state import (
     set_active,
 )
 from core.helpers import make_title_from_text, normalize_role, now_label
-from core.retrieval import load_catalog_and_embeddings, render_debug_info
+from core.retrieval import load_catalog_and_embeddings, render_debug_info, retrieve_top_k
 from ui.styles import load_css
 
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout=APP_LAYOUT)
@@ -90,145 +95,316 @@ for msg in active["messages"]:
                     umbral_ambiguedad=msg["debug"]["umbral"],
                 )
 
-user_text = st.chat_input("Escribe tu consulta…")
+# ============================================
+# Inicialización de estado de desambiguación
+# ============================================
+
+if "flow_state" not in active:
+    active["flow_state"] = "idle"
+
+if "ambiguous_hits" not in active:
+    active["ambiguous_hits"] = None
+
+if "ambig_iter" not in active:
+    active["ambig_iter"] = 0
+
+if "ultima_pregunta" not in active:
+    active["ultima_pregunta"] = None
+
+if "mensaje_base" not in active:
+    active["mensaje_base"] = None
+
+# ==========================================================
+# 🔵 BLOQUE A — EMBEDDINGS + SCORE + RELEVANCIA
+# ==========================================================
+
+user_text = st.chat_input("Escribe tu consulta…", key="main_chat_input")
 
 if user_text:
-    if active.get("closed"):
-        create_and_switch()
-        active = get_active()
 
-    if active["title"] == "Nuevo chat":
-        active["title"] = make_title_from_text(user_text)
-
-    user_msg = {
+    # ==========================================================
+    # Render inmediato del mensaje del usuario
+    # ==========================================================
+    active["messages"].append({
         "role": "user",
         "content": user_text,
         "t": now_label(),
-    }
-    active["messages"].append(user_msg)
+    })
 
-    if active.get("pending_question"):
+    with st.chat_message("user", avatar=USER_AVATAR):
+        st.write(user_text)
+
+    # ==========================================================
+    # CASO 1 — Estamos esperando respuesta a una pregunta
+    # ==========================================================
+    if active["flow_state"] == "esperando_respuesta":
+
         with st.spinner("Analizando tu respuesta…"):
-            salida, _ = call_agente_clarificador(
-                pregunta_sistema=active["pending_question"],
-                respuesta_usuario=user_text,
-                hits=active.get("pending_hits"),
+            tipo_respuesta, _ = call_agente_preguntas(
+                pregunta_sistema=active["ultima_pregunta"],
+                mensaje_usuario=user_text,
                 agents=agents,
             )
 
-            if salida.startswith("ACLARACION:"):
-                texto = salida.replace("ACLARACION:", "").strip()
-                active["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": texto,
-                        "t": now_label(),
-                        "meta": "clarificador",
-                    }
+        # ------------------------------------------------------
+        # Usuario está preguntando (clarificación)
+        # ------------------------------------------------------
+        if tipo_respuesta == "ES_PREGUNTA":
+
+            with st.spinner("Analizando tu pregunta"):
+                salida_clarificador, _ = call_agente_clarificador(
+                    pregunta_sistema=active["ultima_pregunta"],
+                    respuesta_usuario=user_text,
+                    hits=active["ambiguous_hits"],
+                    agents=agents
                 )
-                st.rerun()
 
-            if salida.startswith("RESPUESTA_VALIDA:"):
-                info = salida.replace("RESPUESTA_VALIDA:", "").strip()
-                user_text = f"{active['pending_question']}\n\nRespuesta del ciudadano: {info}"
-                active.pop("pending_question", None)
-                active.pop("pending_hits", None)
-
-    with st.spinner("Analizando…"):
-        try:
-            resultado = clasificar_con_desambiguacion(
-                message=user_text,
-                catalog_df=catalog_df,
-                embeddings=embeddings,
-                agents=agents,
-            )
-        except Exception as e:
-            resultado = {
-                "tipo": "error",
-                "mensaje": f"Error del sistema: {e}",
-            }
-
-    tipo = resultado.get("tipo")
-    print(f"Resultado clasificación: {tipo}")
-
-    if tipo in ("directo", "desambiguado"):
-        tramite = resultado["tramite"]
-        clasificador_text = f"✅ Identificado: **{tramite}**"
-
-        active["messages"].append(
-            {
+            active["messages"].append({
                 "role": "assistant",
-                "content": clasificador_text,
+                "content": salida_clarificador,
                 "t": now_label(),
                 "debug": {
-                    "hits": resultado["hits"],
-                    "umbral": UMBRAL_AMBIGUEDAD,
-                },
-            }
-        )
+                    "hits": active["ambiguous_hits"],
+                    "umbral": UMBRAL_AMBIGUEDAD
+                }
+            })
 
-        active["identified_tramite"] = tramite
-        active["closed"] = True
-        active.pop("pending_question", None)
-        active.pop("pending_hits", None)
+            st.rerun()
 
-        try:
-            rag_text, _ = call_asistente_tramites(tramite, agents=agents)
-        except Exception as e:
-            rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+        # ------------------------------------------------------
+        # Usuario ha respondido
+        # ------------------------------------------------------
+        elif tipo_respuesta == "ES_RESPUESTA":
 
-        active["messages"].append(
-            {
+            mensaje_actual = (
+                f"{active['mensaje_base']}\n\n"
+                f"Respuesta del ciudadano: {user_text}"
+            )
+
+            with st.spinner("Identificando posibles trámites…"):
+                salida_desambiguador, _ = call_agente_desambiguador(
+                    message=mensaje_actual,
+                    ambiguous_hits=active["ambiguous_hits"],
+                    agents=agents
+                )
+
+            # ---- Trámite identificado ----
+            if salida_desambiguador.startswith("CLASIFICACION:"):
+
+                tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+
+                active["flow_state"] = "idle"
+                active["ambiguous_hits"] = None
+                active["ambig_iter"] = 0
+                active["ultima_pregunta"] = None
+                active["mensaje_base"] = None
+
+                with st.spinner("Generando información del trámite..."):
+                    try:
+                        rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                    except Exception as e:
+                        rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+
+                with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+                    st.write(rag_text)
+
+                # Guardar el mensaje final en historial
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": rag_text,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD,
+                    }
+                })
+
+                active["flow_state"] = "idle"
+                active["closed"] = True
+
+            # ---- Sigue habiendo ambigüedad ----
+            elif salida_desambiguador.startswith("PREGUNTA:"):
+
+                if active["ambig_iter"] >= 2:
+
+                    active["messages"].append({
+                        "role": "assistant",
+                        "content": "No ha sido posible determinar el trámite con la información proporcionada.",
+                        "t": now_label(),
+                        "debug": {
+                            "hits": active["ambiguous_hits"],
+                            "umbral": UMBRAL_AMBIGUEDAD
+                        }
+                    })
+
+                    active["flow_state"] = "idle"
+                    active["ambiguous_hits"] = None
+                    active["ambig_iter"] = 0
+                    active["ultima_pregunta"] = None
+                    active["mensaje_base"] = None
+
+                    st.rerun()
+
+                pregunta = salida_desambiguador.replace("PREGUNTA:", "").strip()
+
+                active["ambig_iter"] += 1
+                active["ultima_pregunta"] = pregunta
+
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": pregunta,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD
+                    }
+                })
+
+                st.rerun()
+
+    # ==========================================================
+    # CASO 2 — Flujo normal (estado idle)
+    # ==========================================================
+    else:
+
+        # ------------------------------------------------------
+        # BLOQUE A — Retrieval
+        # ------------------------------------------------------
+        with st.spinner("Analizando…"):
+            hits = retrieve_top_k(
+                message=user_text,
+                df=catalog_df,
+                client=CLIENT,
+                embeddings=embeddings,
+            )
+
+        top_score = hits["score"].values[0]
+
+        # ------------------------------------------------------
+        # BLOQUE B — Umbral mínimo
+        # ------------------------------------------------------
+        if top_score < UMBRAL_SCORE_MINIMO:
+
+            with st.spinner("Analizando consulta…"):
+                relevancia, _ = call_agente_relevancia(
+                    message=user_text,
+                    agents=agents
+                )
+
+            if relevancia == "NO_RELEVANTE":
+
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": MENSAJE_FUERA_DE_AMBITO,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD
+                    }
+                })
+
+                st.rerun()
+
+            active["messages"].append({
+                "role": "assistant",
+                "content": MENSAJE_SCORE_BAJO,
+                "t": now_label(),
+            })
+
+            st.rerun()
+
+        # ------------------------------------------------------
+        # BLOQUE C — Ambigüedad
+        # ------------------------------------------------------
+        scores = hits["score"].values
+        ambiguous_mask = (scores[0] - scores) < UMBRAL_AMBIGUEDAD
+        n_ambiguous = ambiguous_mask.sum()
+
+        # ---- Sin ambigüedad ----
+        if n_ambiguous <= 1:
+
+            tramite = hits.iloc[0]["Trámite"]
+
+            with st.spinner("Generando información del trámite..."):
+                try:
+                    rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                except Exception as e:
+                    rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+
+            with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+                st.write(rag_text)
+
+            # Guardar el mensaje final en historial
+            active["messages"].append({
                 "role": "assistant",
                 "content": rag_text,
                 "t": now_label(),
-            }
-        )
-
-    elif tipo == "necesita_info":
-        pregunta = resultado["pregunta"]
-        active["pending_question"] = pregunta
-        active["pending_hits"] = resultado["hits"]
-
-        active["messages"].append(
-            {
-                "role": "assistant",
-                "content": pregunta,
-                "t": now_label(),
                 "debug": {
-                    "hits": resultado["hits"],
+                    "hits": hits,
                     "umbral": UMBRAL_AMBIGUEDAD,
-                },
-            }
-        )
+                }
+            })
 
-    elif tipo == "fuera_de_ambito":
-        active["messages"].append(
-            {
-                "role": "assistant",
-                "content": MENSAJE_FUERA_DE_AMBITO,
-                "t": now_label(),
-            }
-        )
+            active["flow_state"] = "idle"
+            active["closed"] = True
 
-    elif tipo in ("no_clasificable", "score_bajo"):
-        mensaje = resultado.get("mensaje", MENSAJE_SCORE_BAJO)
-        active["messages"].append(
-            {
-                "role": "assistant",
-                "content": mensaje,
-                "t": now_label(),
-            }
-        )
+        # ---- Hay ambigüedad ----
+        else:
 
-    else:
-        mensaje = resultado.get("mensaje", "Ha ocurrido un error inesperado.")
-        active["messages"].append(
-            {
-                "role": "assistant",
-                "content": mensaje,
-                "t": now_label(),
-            }
-        )
+            ambiguous_hits = hits[ambiguous_mask]
 
-    st.rerun()
+            with st.spinner("Identificando posibles trámites…"):
+                salida_desambiguador, _ = call_agente_desambiguador(
+                    message=user_text,
+                    ambiguous_hits=ambiguous_hits,
+                    agents=agents
+                )
+
+            if salida_desambiguador.startswith("CLASIFICACION:"):
+
+                tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+
+                with st.spinner("Generando información del trámite..."):
+                    try:
+                        rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                    except Exception as e:
+                        rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+
+                with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+                    st.write(rag_text)
+
+                # Guardar el mensaje final en historial
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": rag_text,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": hits,
+                        "umbral": UMBRAL_AMBIGUEDAD,
+                    }
+                })
+
+                active["flow_state"] = "idle"
+                active["closed"] = True
+
+            elif salida_desambiguador.startswith("PREGUNTA:"):
+
+                pregunta = salida_desambiguador.replace("PREGUNTA:", "").strip()
+
+                active["flow_state"] = "esperando_respuesta"
+                active["ambiguous_hits"] = ambiguous_hits
+                active["ambig_iter"] = 1
+                active["ultima_pregunta"] = pregunta
+                active["mensaje_base"] = user_text
+
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": pregunta,
+                    "t": now_label(),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD
+                    }
+                })
+
+                st.rerun()

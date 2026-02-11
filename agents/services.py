@@ -9,6 +9,7 @@ from config import (
     CLASIFICADOR_AGENT_NAME,
     DESAMBIGUADOR_AGENT_NAME,
     RELEVANCIA_AGENT_NAME,
+    PREGUNTAS_AGENT_NAME,
     UMBRAL_AMBIGUEDAD,
     UMBRAL_RETRIEVAL,
     UMBRAL_SCORE_MINIMO,
@@ -172,6 +173,30 @@ def call_agente_relevancia(message: str, agents):
 
     return text.strip(), ms
 
+def call_agente_preguntas(pregunta_sistema: str, mensaje_usuario: str, agents):
+    start = time.time()
+
+    prompt = (
+        "PREGUNTA DEL SISTEMA:\n"
+        f"\"\"\"{pregunta_sistema}\"\"\"\n\n"
+        "NUEVO MENSAJE DEL USUARIO:\n"
+        f"\"\"\"{mensaje_usuario}\"\"\""
+    )
+
+    response = agents["preguntas"].responses.create(
+        input=[{"role": "user", "content": prompt}],
+        extra_body={
+            "agent": {
+                "name": PREGUNTAS_AGENT_NAME,
+                "type": "agent_reference"
+            }
+        },
+    )
+
+    text = getattr(response, "output_text", "") or ""
+    ms = int((time.time() - start) * 1000)
+
+    return text.strip(), ms
 
 def call_agente_clarificador(pregunta_sistema: str, respuesta_usuario: str, hits: pd.DataFrame, agents):
     start = time.time()

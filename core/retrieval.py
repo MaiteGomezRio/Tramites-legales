@@ -82,10 +82,47 @@ def load_catalog_and_embeddings():
 
 
 def render_debug_info(hits, umbral_ambiguedad):
-    top_score = hits.iloc[0]["score"]
 
-    st.markdown("**Candidatos evaluados:**")
-    for _, row in hits.iterrows():
-        gap = top_score - row["score"]
-        marker = " ⚠️ ambiguo" if gap < umbral_ambiguedad else ""
-        st.markdown(f"- `{row['score']:.4f}` · **{row['Trámite']}**{marker}")
+    if hits is None or len(hits) == 0:
+        st.write("Sin candidatos.")
+        return
+
+    # Ordenar por score descendente
+    hits = hits.sort_values("score", ascending=False).reset_index(drop=True)
+
+    st.markdown("### 🔎 Candidatos evaluados")
+
+    html_parts = []
+
+    for idx, row in hits.iterrows():
+        score = float(row["score"])
+
+        gap = hits.iloc[0]["score"] - row["score"]
+        marker = "⚠️ ambiguo" if gap < umbral_ambiguedad else ""
+        name = f"- {row['score']:.4f} · {row['Trámite']} {marker}"
+
+        # Color
+        color = "#388443" 
+
+        width_pct = max(min(score, 1.0), 0.0) * 100  # escala 0-1
+
+        html_parts.append(f"""
+        <div style="margin-bottom: 12px;">
+            <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom:4px;">
+                <span style="color:{color}; font-weight:600;">
+                    {idx+1}. {name}
+                </span>
+            </div>
+            <div style="background:#1f2937; height:8px; border-radius:4px;">
+                <div style="
+                    width:{width_pct:.2f}%;
+                    background:{color};
+                    height:100%;
+                    border-radius:4px;
+                    transition:width 0.4s ease;
+                "></div>
+            </div>
+        </div>
+        """)
+
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
