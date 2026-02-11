@@ -18,6 +18,34 @@ from core.helpers import try_parse_json
 from core.retrieval import retrieve_top_k
 
 
+def _normalize_usage(response):
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    if isinstance(usage, dict):
+        input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+        output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+        total_tokens = usage.get("total_tokens")
+    else:
+        input_tokens = getattr(usage, "input_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
 def call_clasificador(messages, agents):
     start = time.time()
 
@@ -29,11 +57,12 @@ def call_clasificador(messages, agents):
     raw_text = getattr(response, "output_text", "") or ""
     parsed = try_parse_json(raw_text)
     ms = int((time.time() - start) * 1000)
+    usage = _normalize_usage(response)
 
     if isinstance(parsed, dict) and parsed.get("status") == "identified":
-        return "identified", parsed, ms
+        return "identified", parsed, ms, usage
 
-    return "text", raw_text.strip(), ms
+    return "text", raw_text.strip(), ms, usage
 
 
 def call_asistente_tramites(tramite_nombre: str, agents):
@@ -51,7 +80,8 @@ def call_asistente_tramites(tramite_nombre: str, agents):
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
-    return text.strip(), ms
+    usage = _normalize_usage(response)
+    return text.strip(), ms, usage
 
 
 def call_agente_desambiguador(message: str, ambiguous_hits: pd.DataFrame, agents):
@@ -82,8 +112,9 @@ def call_agente_desambiguador(message: str, ambiguous_hits: pd.DataFrame, agents
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
+    usage = _normalize_usage(response)
 
-    return text.strip(), ms
+    return text.strip(), ms, usage
 
 
 def clasificar_con_desambiguacion(
@@ -116,7 +147,11 @@ def clasificar_con_desambiguacion(
         for _, row in ambiguous_hits.iterrows():
             print(f"{row['score']:.4f} | {row['Trámite']}")
 
-        resultado, ms = call_agente_desambiguador(message=message, ambiguous_hits=ambiguous_hits, agents=agents)
+        resultado, ms, _ = call_agente_desambiguador(
+            message=message,
+            ambiguous_hits=ambiguous_hits,
+            agents=agents,
+        )
 
         print(f"Resultado del agente de desambiguación (en {ms} ms): {resultado}")
 
@@ -170,8 +205,9 @@ def call_agente_relevancia(message: str, agents):
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
+    usage = _normalize_usage(response)
 
-    return text.strip(), ms
+    return text.strip(), ms, usage
 
 def call_agente_preguntas(pregunta_sistema: str, mensaje_usuario: str, agents):
     start = time.time()
@@ -195,8 +231,9 @@ def call_agente_preguntas(pregunta_sistema: str, mensaje_usuario: str, agents):
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
+    usage = _normalize_usage(response)
 
-    return text.strip(), ms
+    return text.strip(), ms, usage
 
 def call_agente_clarificador(pregunta_sistema: str, respuesta_usuario: str, hits: pd.DataFrame, agents):
     start = time.time()
@@ -226,5 +263,6 @@ def call_agente_clarificador(pregunta_sistema: str, respuesta_usuario: str, hits
 
     text = getattr(response, "output_text", "") or ""
     ms = int((time.time() - start) * 1000)
+    usage = _normalize_usage(response)
 
-    return text.strip(), ms
+    return text.strip(), ms, usage

@@ -40,7 +40,7 @@ def get_agent(agent_name: str):
 @st.cache_resource(show_spinner="Cargando agente…")
 def load_agents():
     return {
-        "clasificador": get_agent(CLASIFICADOR_AGENT_NAME),
+        # "clasificador": get_agent(CLASIFICADOR_AGENT_NAME),
         "asistente": get_agent(ASISTENTE_AGENT_NAME),
         "desambiguador": get_agent(DESAMBIGUADOR_AGENT_NAME),
         "clarificador": get_agent(CLARIFICADOR_AGENT_NAME),

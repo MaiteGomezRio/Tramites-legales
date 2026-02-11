@@ -30,7 +30,13 @@ from conversations.state import (
     new_conversation,
     set_active,
 )
-from core.helpers import make_title_from_text, normalize_role, now_label
+from core.helpers import (
+    build_usage_summary,
+    make_title_from_text,
+    normalize_role,
+    now_label,
+    render_token_usage_expander,
+)
 from core.retrieval import load_catalog_and_embeddings, render_debug_info, retrieve_top_k
 from ui.styles import load_css
 
@@ -85,8 +91,12 @@ for msg in active["messages"]:
 
     with st.chat_message(role, avatar=avatar):
         st.write(msg["content"])
+        
         if msg.get("t"):
             st.caption(msg["t"])
+
+        if role == "assistant" and msg.get("usage"):
+            render_token_usage_expander(msg.get("usage"))
 
         if role == "assistant" and "debug" in msg:
             with st.expander("ℹ️ Ver detalles de clasificación"):
@@ -140,11 +150,12 @@ if user_text:
     if active["flow_state"] == "esperando_respuesta":
 
         with st.spinner("Analizando tu respuesta…"):
-            tipo_respuesta, _ = call_agente_preguntas(
+            tipo_respuesta, _, preguntas_usage = call_agente_preguntas(
                 pregunta_sistema=active["ultima_pregunta"],
                 mensaje_usuario=user_text,
                 agents=agents,
             )
+        usage_steps = [("preguntas", preguntas_usage)]
 
         # ------------------------------------------------------
         # Usuario está preguntando (clarificación)
@@ -152,17 +163,19 @@ if user_text:
         if tipo_respuesta == "ES_PREGUNTA":
 
             with st.spinner("Analizando tu pregunta"):
-                salida_clarificador, _ = call_agente_clarificador(
+                salida_clarificador, _, clarificador_usage = call_agente_clarificador(
                     pregunta_sistema=active["ultima_pregunta"],
                     respuesta_usuario=user_text,
                     hits=active["ambiguous_hits"],
                     agents=agents
                 )
+            usage_steps.append(("clarificador", clarificador_usage))
 
             active["messages"].append({
                 "role": "assistant",
                 "content": salida_clarificador,
                 "t": now_label(),
+                "usage": build_usage_summary(usage_steps),
                 "debug": {
                     "hits": active["ambiguous_hits"],
                     "umbral": UMBRAL_AMBIGUEDAD
@@ -182,11 +195,12 @@ if user_text:
             )
 
             with st.spinner("Identificando posibles trámites…"):
-                salida_desambiguador, _ = call_agente_desambiguador(
+                salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
                     message=mensaje_actual,
                     ambiguous_hits=active["ambiguous_hits"],
                     agents=agents
                 )
+            usage_steps.append(("desambiguador", desambiguador_usage))
 
             # ---- Trámite identificado ----
             if salida_desambiguador.startswith("CLASIFICACION:"):
@@ -201,18 +215,23 @@ if user_text:
 
                 with st.spinner("Generando información del trámite..."):
                     try:
-                        rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                        rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+                        asistente_usage = None
+                usage_steps.append(("asistente", asistente_usage))
+                usage_summary = build_usage_summary(usage_steps)
 
                 with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                     st.write(rag_text)
+                    render_token_usage_expander(usage_summary)
 
                 # Guardar el mensaje final en historial
                 active["messages"].append({
                     "role": "assistant",
                     "content": rag_text,
                     "t": now_label(),
+                    "usage": usage_summary,
                     "debug": {
                         "hits": active["ambiguous_hits"],
                         "umbral": UMBRAL_AMBIGUEDAD,
@@ -231,6 +250,7 @@ if user_text:
                         "role": "assistant",
                         "content": "No ha sido posible determinar el trámite con la información proporcionada.",
                         "t": now_label(),
+                        "usage": build_usage_summary(usage_steps),
                         "debug": {
                             "hits": active["ambiguous_hits"],
                             "umbral": UMBRAL_AMBIGUEDAD
@@ -254,6 +274,7 @@ if user_text:
                     "role": "assistant",
                     "content": pregunta,
                     "t": now_label(),
+                    "usage": build_usage_summary(usage_steps),
                     "debug": {
                         "hits": active["ambiguous_hits"],
                         "umbral": UMBRAL_AMBIGUEDAD
@@ -286,10 +307,11 @@ if user_text:
         if top_score < UMBRAL_SCORE_MINIMO:
 
             with st.spinner("Analizando consulta…"):
-                relevancia, _ = call_agente_relevancia(
+                relevancia, _, relevancia_usage = call_agente_relevancia(
                     message=user_text,
                     agents=agents
                 )
+            usage_summary = build_usage_summary([("relevancia", relevancia_usage)])
 
             if relevancia == "NO_RELEVANTE":
 
@@ -297,6 +319,7 @@ if user_text:
                     "role": "assistant",
                     "content": MENSAJE_FUERA_DE_AMBITO,
                     "t": now_label(),
+                    "usage": usage_summary,
                     "debug": {
                         "hits": active["ambiguous_hits"],
                         "umbral": UMBRAL_AMBIGUEDAD
@@ -309,6 +332,7 @@ if user_text:
                 "role": "assistant",
                 "content": MENSAJE_SCORE_BAJO,
                 "t": now_label(),
+                "usage": usage_summary,
             })
 
             st.rerun()
@@ -327,18 +351,22 @@ if user_text:
 
             with st.spinner("Generando información del trámite..."):
                 try:
-                    rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                    rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
                 except Exception as e:
                     rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+                    asistente_usage = None
+            usage_summary = build_usage_summary([("asistente", asistente_usage)])
 
             with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                 st.write(rag_text)
+                render_token_usage_expander(usage_summary)
 
             # Guardar el mensaje final en historial
             active["messages"].append({
                 "role": "assistant",
                 "content": rag_text,
                 "t": now_label(),
+                "usage": usage_summary,
                 "debug": {
                     "hits": hits,
                     "umbral": UMBRAL_AMBIGUEDAD,
@@ -354,11 +382,12 @@ if user_text:
             ambiguous_hits = hits[ambiguous_mask]
 
             with st.spinner("Identificando posibles trámites…"):
-                salida_desambiguador, _ = call_agente_desambiguador(
+                salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
                     message=user_text,
                     ambiguous_hits=ambiguous_hits,
                     agents=agents
                 )
+            usage_steps = [("desambiguador", desambiguador_usage)]
 
             if salida_desambiguador.startswith("CLASIFICACION:"):
 
@@ -366,18 +395,23 @@ if user_text:
 
                 with st.spinner("Generando información del trámite..."):
                     try:
-                        rag_text, _ = call_asistente_tramites(tramite, agents=agents)
+                        rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
+                        asistente_usage = None
+                usage_steps.append(("asistente", asistente_usage))
+                usage_summary = build_usage_summary(usage_steps)
 
                 with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                     st.write(rag_text)
+                    render_token_usage_expander(usage_summary)
 
                 # Guardar el mensaje final en historial
                 active["messages"].append({
                     "role": "assistant",
                     "content": rag_text,
                     "t": now_label(),
+                    "usage": usage_summary,
                     "debug": {
                         "hits": hits,
                         "umbral": UMBRAL_AMBIGUEDAD,
@@ -401,6 +435,7 @@ if user_text:
                     "role": "assistant",
                     "content": pregunta,
                     "t": now_label(),
+                    "usage": build_usage_summary(usage_steps),
                     "debug": {
                         "hits": active["ambiguous_hits"],
                         "umbral": UMBRAL_AMBIGUEDAD
