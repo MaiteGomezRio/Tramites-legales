@@ -4,7 +4,46 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config import CATALOG_PATH, CLIENT, EMB_MODEL, UMBRAL_RETRIEVAL
+from config import (
+    CATALOG_PATH, 
+    CLIENT, 
+    EMB_MODEL, 
+    UMBRAL_RETRIEVAL,
+    SEARCH_VECTOR_FIELD,
+    SEARCH_TRAMITE_FIELD,
+    SEARCH_DESCRIPCION_FIELD
+)
+
+from azure.search.documents.models import VectorizedQuery
+from agents.client import get_search_client
+
+
+def _normalize_usage(response):
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    if isinstance(usage, dict):
+        input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+        output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+        total_tokens = usage.get("total_tokens")
+    else:
+        input_tokens = getattr(usage, "input_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
 
 
 def cosine_sim_matrix(query_vec, mat):
@@ -13,24 +52,58 @@ def cosine_sim_matrix(query_vec, mat):
     return m @ q
 
 
-def retrieve_top_k(message, df, embeddings, client, k=8, gap_max=UMBRAL_RETRIEVAL):
-    q_resp = client.embeddings.create(model=EMB_MODEL, input=message)
-    q_vec = np.array(q_resp.data[0].embedding, dtype=np.float32)
-    sims = cosine_sim_matrix(q_vec, embeddings)
-    idx_sorted = np.argsort(-sims)
+def retrieve_top_k(message, k=8, gap_max=UMBRAL_RETRIEVAL, token_trace=None):
+    q_resp = CLIENT.embeddings.create(model=EMB_MODEL, input=message)
+    if token_trace is not None:
+        token_trace.append(_normalize_usage(q_resp))
+    q_vec = q_resp.data[0].embedding
 
-    top_score = sims[idx_sorted[0]]
-    mask = (top_score - sims[idx_sorted]) < gap_max
-    idx = idx_sorted[mask]
+    vq = VectorizedQuery(
+        vector=q_vec,
+        fields=SEARCH_VECTOR_FIELD,
+    )
 
-    if len(idx) < 3:
-        idx = idx_sorted[:3]
-    elif len(idx) > k:
-        idx = idx[:k]
+    results = get_search_client().search(
+        search_text="",
+        vector_queries=[vq],
+        select=[SEARCH_TRAMITE_FIELD, SEARCH_DESCRIPCION_FIELD],
+        top=k,
+    )
 
-    hits = df.iloc[idx].copy()
-    hits["score"] = sims[idx]
-    return hits
+    rows = []
+    for r in results:
+        try:
+            score = float(r.get("@search.score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        rows.append({
+            "Trámite": r.get(SEARCH_TRAMITE_FIELD),
+            "Descripción": r.get(SEARCH_DESCRIPCION_FIELD),
+            "score": score,
+        })
+
+    hits = pd.DataFrame(rows, columns=["Trámite", "Descripción", "score"])
+    if hits.empty:
+        return hits
+
+    hits = hits.sort_values("score", ascending=False).reset_index(drop=True)
+    hits = (
+        hits.dropna(subset=["Trámite"])
+        .drop_duplicates(subset=["Trámite"], keep="first")
+        .reset_index(drop=True)
+    )
+    if hits.empty:
+        return pd.DataFrame(columns=["Trámite", "Descripción", "score"])
+
+    top_score = float(hits.loc[0, "score"])
+    filtered = hits[(top_score - hits["score"].astype(float)) < gap_max].copy()
+
+    if len(filtered) < 3:
+        filtered = hits.head(min(3, len(hits))).copy()
+    elif len(filtered) > k:
+        filtered = filtered.head(k).copy()
+
+    return filtered
 
 
 def embed_texts(texts, client, model=EMB_MODEL, batch_size=100):

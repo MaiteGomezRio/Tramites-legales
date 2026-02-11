@@ -291,13 +291,11 @@ if user_text:
         # ------------------------------------------------------
         # BLOQUE A — Retrieval
         # ------------------------------------------------------
+        retrieval_token_trace = []
         with st.spinner("Analizando…"):
-            hits = retrieve_top_k(
-                message=user_text,
-                df=catalog_df,
-                client=CLIENT,
-                embeddings=embeddings,
-            )
+            hits = retrieve_top_k(message=user_text, token_trace=retrieval_token_trace)
+        retrieval_usage = retrieval_token_trace[0] if retrieval_token_trace else None
+        base_usage_steps = [("retrieval", retrieval_usage)]
 
         top_score = hits["score"].values[0]
 
@@ -311,7 +309,7 @@ if user_text:
                     message=user_text,
                     agents=agents
                 )
-            usage_summary = build_usage_summary([("relevancia", relevancia_usage)])
+            usage_summary = build_usage_summary(base_usage_steps + [("relevancia", relevancia_usage)])
 
             if relevancia == "NO_RELEVANTE":
 
@@ -355,7 +353,7 @@ if user_text:
                 except Exception as e:
                     rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                     asistente_usage = None
-            usage_summary = build_usage_summary([("asistente", asistente_usage)])
+            usage_summary = build_usage_summary(base_usage_steps + [("asistente", asistente_usage)])
 
             with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                 st.write(rag_text)
@@ -387,7 +385,7 @@ if user_text:
                     ambiguous_hits=ambiguous_hits,
                     agents=agents
                 )
-            usage_steps = [("desambiguador", desambiguador_usage)]
+            usage_steps = base_usage_steps + [("desambiguador", desambiguador_usage)]
 
             if salida_desambiguador.startswith("CLASIFICACION:"):
 

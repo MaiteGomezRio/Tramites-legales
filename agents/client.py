@@ -1,8 +1,14 @@
 import streamlit as st
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
+from azure.search.documents import SearchClient
+from azure.core.credentials import AzureKeyCredential
+
 
 from config import (
+    SEARCH_ENDPOINT,
+    SEARCH_QUERY_KEY,
+    INDEX_NAME,
     AIPROJECT_ENDPOINT,
     ASISTENTE_AGENT_NAME,
     CLARIFICADOR_AGENT_NAME,
@@ -47,3 +53,16 @@ def load_agents():
         "relevancia": get_agent(RELEVANCIA_AGENT_NAME),
         "preguntas": get_agent(PREGUNTAS_AGENT_NAME),
     }
+
+@st.cache_resource(show_spinner=False)
+def get_search_client():
+    if not SEARCH_ENDPOINT or not SEARCH_QUERY_KEY or not INDEX_NAME:
+        raise RuntimeError(
+            "Faltan variables de entorno para Azure AI Search: "
+            "AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_QUERY_KEY o AZURE_INDEX_NAME."
+        )
+    return SearchClient(
+        endpoint=SEARCH_ENDPOINT,
+        index_name=INDEX_NAME,
+        credential=AzureKeyCredential(SEARCH_QUERY_KEY),
+    )

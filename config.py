@@ -65,3 +65,10 @@ CLIENT = OpenAI(
         "https://azure-openai-tramites-legales.openai.azure.com/openai/v1/",
     ),
 )
+
+SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT", "")
+SEARCH_QUERY_KEY = os.getenv("AZURE_SEARCH_QUERY_KEY", "")
+INDEX_NAME = os.getenv("AZURE_INDEX_NAME", "tramites-index")
+SEARCH_VECTOR_FIELD = os.getenv("AZURE_SEARCH_VECTOR_FIELD", "embedding")
+SEARCH_TRAMITE_FIELD = os.getenv("AZURE_SEARCH_TRAMITE_FIELD", "tramite")
+SEARCH_DESCRIPCION_FIELD = os.getenv("AZURE_SEARCH_DESCRIPCION_FIELD", "descripcion")
