@@ -125,7 +125,7 @@ span[data-testid="stIconMaterial"] {
 div[data-testid="stChatInput"] {
   background: var(--primary-soft);
   border: none !important;
-  border-radius: 999px;
+  border-radius: 12px;
   padding: 6px 6px;
 
   outline: none !important;

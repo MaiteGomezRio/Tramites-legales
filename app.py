@@ -43,6 +43,8 @@ from ui.styles import load_css
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout=APP_LAYOUT)
 load_css(CSS_PATH)
 
+
+
 def mostrar_landing():
     st.markdown("""
         <div class="hero-container">
@@ -55,28 +57,29 @@ def mostrar_landing():
         </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("""
-        <div class="cards-wrapper">
-            <div class="example-card">
-                <div class="example-card-title">📄 Reclamar una deuda</div>
-                <div class="example-card-desc">
-                    Te explico qué procedimiento corresponde según el tipo de deuda.
-                </div>
-            </div>
-            <div class="example-card">
-                <div class="example-card-title">⚖️ Solicitar abogado de oficio</div>
-                <div class="example-card-desc">
-                    Comprueba si cumples requisitos para justicia gratuita.
-                </div>
-            </div>
-            <div class="example-card">
-                <div class="example-card-title">🏢 Crear una empresa</div>
-                <div class="example-card-desc">
-                    Te orientamos sobre forma jurídica y trámites necesarios.
-                </div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("📄 Reclamar una deuda", use_container_width=True):
+            enviar_pregunta_ejemplo("Quiero reclamar una deuda")
+
+    with col2:
+        if st.button("⚖️ Solicitar abogado de oficio", use_container_width=True):
+            enviar_pregunta_ejemplo("Quiero solicitar un abogado de oficio")
+
+    with col3:
+        if st.button("🏢 Crear una empresa", use_container_width=True):
+            enviar_pregunta_ejemplo("Quiero crear una empresa")
+
+
+    # Mensaje inicial del asistente debajo de las tarjetas
+    active = get_active()
+    if active["messages"]:
+        first_msg = active["messages"][0]
+        with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+            st.markdown(first_msg["content"])
+            if first_msg.get("t"):
+                st.caption(first_msg["t"])
 
 
 def mostrar_chat(active):
@@ -84,6 +87,15 @@ def mostrar_chat(active):
         with st.chat_message(normalize_role(m["role"]), avatar=ASSISTANT_AVATAR if m["role"] == "assistant" else USER_AVATAR):
             st.markdown(m["content"])
 
+def enviar_pregunta_ejemplo(texto):
+    active = get_active()
+
+    active["messages"].append({
+        "role": "user",
+        "content": texto
+    })
+
+    st.rerun()
 
 catalog_df, embeddings = load_catalog_and_embeddings()
 agents = load_agents()
@@ -111,7 +123,7 @@ with st.sidebar:
 
     st.write("")
     st.markdown("---")
-    active = get_active()
+    
     col_a, col_b = st.columns([1, 1])
     with col_a:
         if st.button("Borrar chat", use_container_width=True):
@@ -122,32 +134,10 @@ with st.sidebar:
             st.session_state.conversations = [new_conversation(seed_assistant=True)]
             st.session_state.active_id = st.session_state.conversations[0]["id"]
             st.rerun()
-
-active = get_active()
-
+    active = get_active()
 
 
 #st.title(APP_TITLE)
-
-for msg in active["messages"]:
-    role = normalize_role(msg.get("role", "user"))
-    avatar = ASSISTANT_AVATAR if role == "assistant" else USER_AVATAR
-
-    with st.chat_message(role, avatar=avatar):
-        st.write(msg["content"])
-        
-        if msg.get("t"):
-            st.caption(msg["t"])
-
-        if role == "assistant" and msg.get("usage"):
-            render_token_usage_expander(msg.get("usage"))
-
-        if role == "assistant" and "debug" in msg:
-            with st.expander("ℹ️ Ver detalles de clasificación"):
-                render_debug_info(
-                    hits=msg["debug"]["hits"],
-                    umbral_ambiguedad=msg["debug"]["umbral"],
-                )
 
 if len(active["messages"]) <= 1:
     # Solo mensaje inicial del sistema
