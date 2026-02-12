@@ -47,6 +47,18 @@ catalog_df, embeddings = load_catalog_and_embeddings()
 agents = load_agents()
 
 
+def format_tramite_answer(tramite: str, raw_text: str) -> str:
+    detalle = (raw_text or "").strip()
+    if not detalle:
+        detalle = "No se ha podido generar una explicación orientativa para este trámite."
+    return (
+        "### Resultado del trámite\n\n"
+        f"**Tipo de trámite:** **{tramite}**\n\n"
+        "**Información orientativa:**\n\n"
+        f"{detalle}"
+    )
+
+
 def get_tramite_descripcion(tramite: str, hits=None) -> str:
     target = (tramite or "").strip().casefold()
     if not target:
@@ -77,7 +89,15 @@ with st.sidebar:
 
     for c in sorted(st.session_state.conversations, key=lambda x: x["created_at"], reverse=True):
         is_active = c["id"] == st.session_state.active_id
-        title = c["title"] or "Chat"
+        title = c.get("title") or "Chat"
+        if title == "Nuevo chat":
+            first_user = next(
+                (m.get("content", "") for m in c.get("messages", []) if m.get("role") == "user"),
+                "",
+            )
+            if first_user:
+                title = make_title_from_text(first_user)
+                c["title"] = title
         suffix = " ✅" if c.get("closed") else ""
         label = f"{'👉 ' if is_active else ''}{title}{suffix}"
         if st.button(label, key=f"open_{c['id']}", use_container_width=True):
@@ -157,6 +177,8 @@ if user_text:
         "content": user_text,
         "t": now_label(),
     })
+    if (active.get("title") or "").strip() == "Nuevo chat":
+        active["title"] = make_title_from_text(user_text)
 
     with st.chat_message("user", avatar=USER_AVATAR):
         st.write(user_text)
@@ -238,6 +260,7 @@ if user_text:
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                         asistente_usage = None
+                rag_text = format_tramite_answer(tramite, rag_text)
                 usage_steps.append(("asistente", asistente_usage))
                 usage_summary = build_usage_summary(usage_steps)
 
@@ -377,6 +400,7 @@ if user_text:
                 except Exception as e:
                     rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                     asistente_usage = None
+            rag_text = format_tramite_answer(tramite, rag_text)
             usage_summary = build_usage_summary(base_usage_steps + [("asistente", asistente_usage)])
 
             with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
@@ -426,6 +450,7 @@ if user_text:
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                         asistente_usage = None
+                rag_text = format_tramite_answer(tramite, rag_text)
                 usage_steps.append(("asistente", asistente_usage))
                 usage_summary = build_usage_summary(usage_steps)
 
