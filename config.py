@@ -47,7 +47,7 @@ MENSAJE_SCORE_BAJO = (
 )
 
 MENSAJE_FUERA_DE_AMBITO = (
-    "Este es un asistente de clasificación de trámites judiciales. "
+    "Este chat es de trámites legales y judiciales. "
     "Solo podemos ayudarle con consultas relacionadas con procedimientos legales y judiciales. "
     "Si tiene alguna consulta de este tipo, por favor reformule su mensaje."
 )

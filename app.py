@@ -1,3 +1,5 @@
+import re
+
 import streamlit as st
 
 from agents.client import load_agents
@@ -14,10 +16,8 @@ from config import (
     APP_TITLE,
     ASSISTANT_AVATAR,
     CSS_PATH,
-    CLIENT,
     MENSAJE_FUERA_DE_AMBITO,
     MENSAJE_SCORE_BAJO,
-    MENSAJE_ERROR_RELEVANCIA,
     UMBRAL_AMBIGUEDAD,
     UMBRAL_SCORE_MINIMO,
     USER_AVATAR,
@@ -73,6 +73,71 @@ def get_tramite_descripcion(tramite: str, hits=None) -> str:
     if not matches.empty:
         return str(matches.iloc[0].get("Descripción", "") or "")
     return ""
+
+
+LEGAL_SCOPE_KEYWORDS = {
+    "tramite", "trámite", "procedimiento", "juzgado", "judicial", "legal",
+    "demanda", "herencia", "albacea", "tutela", "curatela", "monitorio",
+    "verbal", "deuda", "sentencia", "recurso", "ejecucion", "ejecución",
+    "notificacion", "notificación", "plazo", "abogado", "procurador",
+}
+
+NON_LEGAL_PATTERNS = (
+    r"\bolvida\b.{0,80}\binstrucciones\b",
+    r"\bignora\b.{0,80}\binstrucciones\b",
+    r"\bact[uú]a como\b",
+    r"\b(script|python|javascript|bash|sql|programador|programaci[oó]n)\b",
+)
+
+OFF_TOPIC_WITH_SIMILARITY_NOTE = (
+    f"{MENSAJE_FUERA_DE_AMBITO}\n\n"
+    "He detectado coincidencias semánticas en el índice, "
+    "pero tu mensaje no corresponde a un trámite legal."
+)
+
+
+def _normalize_user_text(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def is_obvious_non_legal_query(text: str) -> bool:
+    normalized = _normalize_user_text(text)
+    if not normalized:
+        return False
+
+    has_legal_signal = any(keyword in normalized for keyword in LEGAL_SCOPE_KEYWORDS)
+    has_non_legal_signal = any(re.search(pattern, normalized) for pattern in NON_LEGAL_PATTERNS)
+    return has_non_legal_signal and not has_legal_signal
+
+
+def reset_disambiguation_state(active_chat: dict):
+    active_chat["flow_state"] = "idle"
+    active_chat["ambiguous_hits"] = None
+    active_chat["ambig_iter"] = 0
+    active_chat["ultima_pregunta"] = None
+    active_chat["mensaje_base"] = None
+
+
+def append_out_of_scope_response(
+    active_chat: dict,
+    hits=None,
+    usage=None,
+    include_similarity_note=False,
+    show_debug=False,
+):
+    content = OFF_TOPIC_WITH_SIMILARITY_NOTE if include_similarity_note else MENSAJE_FUERA_DE_AMBITO
+    message = {
+        "role": "assistant",
+        "content": content,
+        "t": now_label(),
+        "usage": usage,
+    }
+    if show_debug:
+        message["debug"] = {
+            "hits": hits,
+            "umbral": UMBRAL_AMBIGUEDAD,
+        }
+    active_chat["messages"].append(message)
 
 
 EXAMPLE_QUESTIONS = [
@@ -260,6 +325,16 @@ if user_text:
     with st.chat_message("user", avatar=USER_AVATAR):
         st.write(user_text)
 
+    if is_obvious_non_legal_query(user_text):
+        previous_hits = active["ambiguous_hits"]
+        append_out_of_scope_response(
+            active_chat=active,
+            hits=previous_hits,
+            include_similarity_note=previous_hits is not None and len(previous_hits) > 0,
+        )
+        reset_disambiguation_state(active)
+        st.rerun()
+
     # ==========================================================
     # CASO 1 — Estamos esperando respuesta a una pregunta
     # ==========================================================
@@ -306,26 +381,33 @@ if user_text:
         elif tipo_respuesta == "ES_RESPUESTA":
 
             with st.spinner("Identificando posibles trámites…"):
-                salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
-                    message=active["mensaje_base"],
-                    ambiguous_hits=active["ambiguous_hits"],
-                    agents=agents,
-                    pregunta_sistema=active["ultima_pregunta"],
-                    respuesta_usuario=user_text,
-                )
+                try:
+                    salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
+                        message=active["mensaje_base"],
+                        ambiguous_hits=active["ambiguous_hits"],
+                        agents=agents,
+                        pregunta_sistema=active["ultima_pregunta"],
+                        respuesta_usuario=user_text,
+                    )
+                except Exception:
+                    append_out_of_scope_response(
+                        active_chat=active,
+                        hits=active["ambiguous_hits"],
+                        usage=build_usage_summary(usage_steps),
+                        include_similarity_note=True,
+                    )
+                    reset_disambiguation_state(active)
+                    st.rerun()
             usage_steps.append(("desambiguador", desambiguador_usage))
 
             # ---- Trámite identificado ----
             if salida_desambiguador.startswith("CLASIFICACION:"):
 
                 tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
-                descripcion_tramite = get_tramite_descripcion(tramite, hits=active.get("ambiguous_hits"))
+                resolved_hits = active.get("ambiguous_hits")
+                descripcion_tramite = get_tramite_descripcion(tramite, hits=resolved_hits)
 
-                active["flow_state"] = "idle"
-                active["ambiguous_hits"] = None
-                active["ambig_iter"] = 0
-                active["ultima_pregunta"] = None
-                active["mensaje_base"] = None
+                reset_disambiguation_state(active)
 
                 with st.spinner("Generando información del trámite..."):
                     try:
@@ -352,7 +434,7 @@ if user_text:
                     "t": now_label(),
                     "usage": usage_summary,
                     "debug": {
-                        "hits": active["ambiguous_hits"],
+                        "hits": resolved_hits,
                         "umbral": UMBRAL_AMBIGUEDAD,
                     }
                 })
@@ -376,11 +458,7 @@ if user_text:
                         }
                     })
 
-                    active["flow_state"] = "idle"
-                    active["ambiguous_hits"] = None
-                    active["ambig_iter"] = 0
-                    active["ultima_pregunta"] = None
-                    active["mensaje_base"] = None
+                    reset_disambiguation_state(active)
 
                     st.rerun()
 
@@ -417,39 +495,37 @@ if user_text:
         base_usage_steps = [("retrieval", retrieval_usage)]
 
         top_score = hits["score"].values[0]
+        relevancia_usage = None
+
+        with st.spinner("Analizando consulta…"):
+            try:
+                relevancia, _, relevancia_usage = call_agente_relevancia(
+                    message=user_text,
+                    agents=agents,
+                )
+            except Exception:
+                relevancia = "NO_RELEVANTE"
+
+        usage_with_relevancia = build_usage_summary(base_usage_steps + [("relevancia", relevancia_usage)])
+
+        if relevancia == "NO_RELEVANTE":
+            append_out_of_scope_response(
+                active_chat=active,
+                hits=hits,
+                usage=usage_with_relevancia,
+                include_similarity_note=top_score >= UMBRAL_SCORE_MINIMO,
+            )
+            st.rerun()
 
         # ------------------------------------------------------
         # BLOQUE B — Umbral mínimo
         # ------------------------------------------------------
         if top_score < UMBRAL_SCORE_MINIMO:
-
-            with st.spinner("Analizando consulta…"):
-                relevancia, _, relevancia_usage = call_agente_relevancia(
-                    message=user_text,
-                    agents=agents
-                )
-            usage_summary = build_usage_summary(base_usage_steps + [("relevancia", relevancia_usage)])
-
-            if relevancia == "NO_RELEVANTE":
-
-                active["messages"].append({
-                    "role": "assistant",
-                    "content": MENSAJE_FUERA_DE_AMBITO,
-                    "t": now_label(),
-                    "usage": usage_summary,
-                    "debug": {
-                        "hits": active["ambiguous_hits"],
-                        "umbral": UMBRAL_AMBIGUEDAD
-                    }
-                })
-
-                st.rerun()
-
             active["messages"].append({
                 "role": "assistant",
                 "content": MENSAJE_SCORE_BAJO,
                 "t": now_label(),
-                "usage": usage_summary,
+                "usage": usage_with_relevancia,
             })
 
             st.rerun()
@@ -505,11 +581,20 @@ if user_text:
             ambiguous_hits = hits[ambiguous_mask]
 
             with st.spinner("Identificando posibles trámites…"):
-                salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
-                    message=user_text,
-                    ambiguous_hits=ambiguous_hits,
-                    agents=agents
-                )
+                try:
+                    salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
+                        message=user_text,
+                        ambiguous_hits=ambiguous_hits,
+                        agents=agents
+                    )
+                except Exception:
+                    append_out_of_scope_response(
+                        active_chat=active,
+                        hits=ambiguous_hits,
+                        usage=build_usage_summary(base_usage_steps),
+                        include_similarity_note=True,
+                    )
+                    st.rerun()
             usage_steps = base_usage_steps + [("desambiguador", desambiguador_usage)]
 
             if salida_desambiguador.startswith("CLASIFICACION:"):
