@@ -100,14 +100,22 @@ def _normalize_user_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
 
 
-def is_obvious_non_legal_query(text: str) -> bool:
+def has_legal_scope_signal(text: str) -> bool:
     normalized = _normalize_user_text(text)
     if not normalized:
         return False
+    return any(keyword in normalized for keyword in LEGAL_SCOPE_KEYWORDS)
 
-    has_legal_signal = any(keyword in normalized for keyword in LEGAL_SCOPE_KEYWORDS)
-    has_non_legal_signal = any(re.search(pattern, normalized) for pattern in NON_LEGAL_PATTERNS)
-    return has_non_legal_signal and not has_legal_signal
+
+def has_non_legal_signal(text: str) -> bool:
+    normalized = _normalize_user_text(text)
+    if not normalized:
+        return False
+    return any(re.search(pattern, normalized) for pattern in NON_LEGAL_PATTERNS)
+
+
+def is_obvious_non_legal_query(text: str) -> bool:
+    return has_non_legal_signal(text) and not has_legal_scope_signal(text)
 
 
 def reset_disambiguation_state(active_chat: dict):
@@ -138,6 +146,86 @@ def append_out_of_scope_response(
             "umbral": UMBRAL_AMBIGUEDAD,
         }
     active_chat["messages"].append(message)
+
+
+def _normalize_agent_label(text: str) -> str:
+    return " ".join(str(text or "").strip().upper().split())
+
+
+def normalize_preguntas_output(text: str) -> str:
+    label = _normalize_agent_label(text)
+    if "ES_PREGUNTA" in label or label == "PREGUNTA":
+        return "ES_PREGUNTA"
+    if "ES_RESPUESTA" in label or label == "RESPUESTA":
+        return "ES_RESPUESTA"
+    return "DESCONOCIDO"
+
+
+def _normalize_for_compare(text: str) -> str:
+    compact = re.sub(r"[^a-z0-9áéíóúñü ]+", " ", str(text or "").casefold())
+    return " ".join(compact.split())
+
+
+def resolve_candidate_from_text(raw_text: str, hits) -> str | None:
+    if hits is None or len(hits) == 0:
+        return None
+
+    raw_norm = _normalize_for_compare(raw_text)
+    if not raw_norm:
+        return None
+
+    candidates = []
+    for _, row in hits.iterrows():
+        name = str(row.get("Trámite", "") or "").strip()
+        if name:
+            candidates.append((name, _normalize_for_compare(name)))
+
+    exact = [name for name, norm in candidates if raw_norm == norm]
+    if len(exact) == 1:
+        return exact[0]
+
+    contains = [name for name, norm in candidates if raw_norm in norm or norm in raw_norm]
+    if len(contains) == 1:
+        return contains[0]
+
+    return None
+
+
+def parse_desambiguador_output(raw_text: str, hits=None) -> tuple[str, str]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return "DESCONOCIDO", ""
+
+    match_clasificacion = re.search(r"CLASIFICACI[ÓO]N\s*:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if match_clasificacion:
+        return "CLASIFICACION", match_clasificacion.group(1).strip()
+
+    match_pregunta = re.search(r"PREGUNTA\s*:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if match_pregunta:
+        return "PREGUNTA", match_pregunta.group(1).strip()
+
+    resolved = resolve_candidate_from_text(text, hits)
+    if resolved:
+        return "CLASIFICACION", resolved
+
+    return "DESCONOCIDO", text
+
+
+def build_fallback_disambiguation_question(hits) -> str:
+    if hits is None or len(hits) == 0:
+        return "No he podido interpretar tu respuesta. ¿Puedes reformularla con más detalle?"
+
+    names = []
+    for _, row in hits.head(2).iterrows():
+        name = str(row.get("Trámite", "") or "").strip()
+        if name:
+            names.append(name)
+
+    if len(names) >= 2:
+        return f'No lo he interpretado del todo. ¿Tu caso encaja mejor con "{names[0]}" o con "{names[1]}"?'
+    if len(names) == 1:
+        return f'No lo he interpretado del todo. ¿Confirmas que el trámite es "{names[0]}"?'
+    return "No he podido interpretar tu respuesta. ¿Puedes reformularla con más detalle?"
 
 
 EXAMPLE_QUESTIONS = [
@@ -341,11 +429,12 @@ if user_text:
     if active["flow_state"] == "esperando_respuesta":
 
         with st.spinner("Analizando tu respuesta…"):
-            tipo_respuesta, _, preguntas_usage = call_agente_preguntas(
+            tipo_respuesta_raw, _, preguntas_usage = call_agente_preguntas(
                 pregunta_sistema=active["ultima_pregunta"],
                 mensaje_usuario=user_text,
                 agents=agents,
             )
+        tipo_respuesta = normalize_preguntas_output(tipo_respuesta_raw)
         usage_steps = [("preguntas", preguntas_usage)]
 
         # ------------------------------------------------------
@@ -378,32 +467,43 @@ if user_text:
         # ------------------------------------------------------
         # Usuario ha respondido
         # ------------------------------------------------------
-        elif tipo_respuesta == "ES_RESPUESTA":
-
-            with st.spinner("Identificando posibles trámites…"):
-                try:
-                    salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
-                        message=active["mensaje_base"],
-                        ambiguous_hits=active["ambiguous_hits"],
-                        agents=agents,
-                        pregunta_sistema=active["ultima_pregunta"],
-                        respuesta_usuario=user_text,
-                    )
-                except Exception:
-                    append_out_of_scope_response(
-                        active_chat=active,
-                        hits=active["ambiguous_hits"],
-                        usage=build_usage_summary(usage_steps),
-                        include_similarity_note=True,
-                    )
-                    reset_disambiguation_state(active)
-                    st.rerun()
-            usage_steps.append(("desambiguador", desambiguador_usage))
+        else:
+            direct_match = resolve_candidate_from_text(user_text, active["ambiguous_hits"])
+            if direct_match:
+                decision_tipo, decision_valor = "CLASIFICACION", direct_match
+            else:
+                with st.spinner("Identificando posibles trámites…"):
+                    try:
+                        salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
+                            message=active["mensaje_base"],
+                            ambiguous_hits=active["ambiguous_hits"],
+                            agents=agents,
+                            pregunta_sistema=active["ultima_pregunta"],
+                            respuesta_usuario=user_text,
+                        )
+                    except Exception:
+                        append_out_of_scope_response(
+                            active_chat=active,
+                            hits=active["ambiguous_hits"],
+                            usage=build_usage_summary(usage_steps),
+                            include_similarity_note=True,
+                        )
+                        reset_disambiguation_state(active)
+                        st.rerun()
+                usage_steps.append(("desambiguador", desambiguador_usage))
+                decision_tipo, decision_valor = parse_desambiguador_output(
+                    salida_desambiguador,
+                    hits=active["ambiguous_hits"],
+                )
+                if decision_tipo == "DESCONOCIDO":
+                    second_match = resolve_candidate_from_text(user_text, active["ambiguous_hits"])
+                    if second_match:
+                        decision_tipo, decision_valor = "CLASIFICACION", second_match
 
             # ---- Trámite identificado ----
-            if salida_desambiguador.startswith("CLASIFICACION:"):
+            if decision_tipo == "CLASIFICACION":
 
-                tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+                tramite = decision_valor
                 resolved_hits = active.get("ambiguous_hits")
                 descripcion_tramite = get_tramite_descripcion(tramite, hits=resolved_hits)
 
@@ -443,7 +543,7 @@ if user_text:
                 active["closed"] = True
 
             # ---- Sigue habiendo ambigüedad ----
-            elif salida_desambiguador.startswith("PREGUNTA:"):
+            elif decision_tipo == "PREGUNTA":
 
                 if active["ambig_iter"] >= 2:
 
@@ -462,7 +562,7 @@ if user_text:
 
                     st.rerun()
 
-                pregunta = salida_desambiguador.replace("PREGUNTA:", "").strip()
+                pregunta = decision_valor or build_fallback_disambiguation_question(active["ambiguous_hits"])
 
                 active["ambig_iter"] += 1
                 active["ultima_pregunta"] = pregunta
@@ -480,6 +580,33 @@ if user_text:
 
                 st.rerun()
 
+            else:
+
+                if active["ambig_iter"] >= 2:
+                    active["messages"].append({
+                        "role": "assistant",
+                        "content": "No ha sido posible determinar el trámite con la información proporcionada.",
+                        "t": now_label(),
+                        "usage": build_usage_summary(usage_steps),
+                    })
+                    reset_disambiguation_state(active)
+                    st.rerun()
+
+                pregunta = build_fallback_disambiguation_question(active["ambiguous_hits"])
+                active["ambig_iter"] += 1
+                active["ultima_pregunta"] = pregunta
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": pregunta,
+                    "t": now_label(),
+                    "usage": build_usage_summary(usage_steps),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD
+                    }
+                })
+                st.rerun()
+
     # ==========================================================
     # CASO 2 — Flujo normal (estado idle)
     # ==========================================================
@@ -495,27 +622,33 @@ if user_text:
         base_usage_steps = [("retrieval", retrieval_usage)]
 
         top_score = hits["score"].values[0]
+        legal_signal = has_legal_scope_signal(user_text)
+        non_legal_signal = has_non_legal_signal(user_text)
+        should_run_relevancia = top_score < UMBRAL_SCORE_MINIMO or non_legal_signal
         relevancia_usage = None
+        relevancia = None
+        usage_with_relevancia = build_usage_summary(base_usage_steps)
 
-        with st.spinner("Analizando consulta…"):
-            try:
-                relevancia, _, relevancia_usage = call_agente_relevancia(
-                    message=user_text,
-                    agents=agents,
+        if should_run_relevancia:
+            with st.spinner("Analizando consulta…"):
+                try:
+                    relevancia, _, relevancia_usage = call_agente_relevancia(
+                        message=user_text,
+                        agents=agents,
+                    )
+                except Exception:
+                    relevancia = "NO_RELEVANTE"
+
+            usage_with_relevancia = build_usage_summary(base_usage_steps + [("relevancia", relevancia_usage)])
+
+            if relevancia == "NO_RELEVANTE" and (top_score < UMBRAL_SCORE_MINIMO or non_legal_signal or not legal_signal):
+                append_out_of_scope_response(
+                    active_chat=active,
+                    hits=hits,
+                    usage=usage_with_relevancia,
+                    include_similarity_note=top_score >= UMBRAL_SCORE_MINIMO,
                 )
-            except Exception:
-                relevancia = "NO_RELEVANTE"
-
-        usage_with_relevancia = build_usage_summary(base_usage_steps + [("relevancia", relevancia_usage)])
-
-        if relevancia == "NO_RELEVANTE":
-            append_out_of_scope_response(
-                active_chat=active,
-                hits=hits,
-                usage=usage_with_relevancia,
-                include_similarity_note=top_score >= UMBRAL_SCORE_MINIMO,
-            )
-            st.rerun()
+                st.rerun()
 
         # ------------------------------------------------------
         # BLOQUE B — Umbral mínimo
@@ -596,10 +729,14 @@ if user_text:
                     )
                     st.rerun()
             usage_steps = base_usage_steps + [("desambiguador", desambiguador_usage)]
+            decision_tipo, decision_valor = parse_desambiguador_output(
+                salida_desambiguador,
+                hits=ambiguous_hits,
+            )
 
-            if salida_desambiguador.startswith("CLASIFICACION:"):
+            if decision_tipo == "CLASIFICACION":
 
-                tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+                tramite = decision_valor
                 descripcion_tramite = get_tramite_descripcion(tramite, hits=hits)
 
                 with st.spinner("Generando información del trámite..."):
@@ -635,10 +772,32 @@ if user_text:
                 active["flow_state"] = "idle"
                 active["closed"] = True
 
-            elif salida_desambiguador.startswith("PREGUNTA:"):
+            elif decision_tipo == "PREGUNTA":
 
-                pregunta = salida_desambiguador.replace("PREGUNTA:", "").strip()
+                pregunta = decision_valor or build_fallback_disambiguation_question(ambiguous_hits)
 
+                active["flow_state"] = "esperando_respuesta"
+                active["ambiguous_hits"] = ambiguous_hits
+                active["ambig_iter"] = 1
+                active["ultima_pregunta"] = pregunta
+                active["mensaje_base"] = user_text
+
+                active["messages"].append({
+                    "role": "assistant",
+                    "content": pregunta,
+                    "t": now_label(),
+                    "usage": build_usage_summary(usage_steps),
+                    "debug": {
+                        "hits": active["ambiguous_hits"],
+                        "umbral": UMBRAL_AMBIGUEDAD
+                    }
+                })
+
+                st.rerun()
+
+            else:
+
+                pregunta = build_fallback_disambiguation_question(ambiguous_hits)
                 active["flow_state"] = "esperando_respuesta"
                 active["ambiguous_hits"] = ambiguous_hits
                 active["ambig_iter"] = 1

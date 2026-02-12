@@ -24,6 +24,25 @@ from core.helpers import try_parse_json
 from core.retrieval import retrieve_top_k
 
 
+_ASISTENTE_REFUSAL_PATTERNS = (
+    r"\bi[' ]?m sorry\b",
+    r"\bcannot assist\b",
+    r"\bcan[' ]?t assist\b",
+    r"\bwith that request\b",
+    r"\blo siento\b",
+    r"\bno puedo (ayudar|asistir|proporcionar)\b",
+)
+
+_ENGLISH_HINT_WORDS = {
+    "sorry", "cannot", "assist", "request", "please", "help", "with", "that",
+}
+
+_SPANISH_HINT_WORDS = {
+    "trámite", "procedimiento", "document", "juzgad", "judicial", "legal",
+    "información", "orientativa", "plazo", "demanda", "deuda",
+}
+
+
 def _normalize_usage(response):
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -50,6 +69,23 @@ def _normalize_usage(response):
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
     }
+
+
+def _looks_like_refusal(text: str) -> bool:
+    low = " ".join(str(text or "").lower().split())
+    if not low:
+        return True
+    return any(re.search(pattern, low) for pattern in _ASISTENTE_REFUSAL_PATTERNS)
+
+
+def _looks_like_english_text(text: str) -> bool:
+    low = " ".join(str(text or "").lower().split())
+    if not low:
+        return False
+
+    english_hits = sum(1 for word in _ENGLISH_HINT_WORDS if re.search(rf"\b{re.escape(word)}\b", low))
+    spanish_hits = sum(1 for word in _SPANISH_HINT_WORDS if word in low)
+    return english_hits >= 2 and spanish_hits == 0
 
 
 def call_clasificador(messages, agents):
@@ -87,7 +123,9 @@ def call_asistente_tramites(
     prompt = (
         f"El trámite identificado es: {tramite_nombre}.\n"
         f"Resumen del catálogo: {_shorten_text(descripcion or '', 1200)}\n\n"
-        "Proporciona información clara y orientativa para un ciudadano."
+        "Responde exclusivamente en español (es-ES).\n"
+        "Proporciona información clara y orientativa para un ciudadano.\n"
+        "Si faltan datos, indícalo en español y explica qué información adicional ayudaría."
     )
 
     assistant_client = agents.get("asistente")
@@ -98,14 +136,29 @@ def call_asistente_tramites(
         assistant_client = get_agent(ASISTENTE_AGENT_NAME)
         agents["asistente"] = assistant_client
 
-    response = assistant_client.responses.create(
-        input=[{"role": "user", "content": prompt}],
-        extra_body={"agent": {"name": ASISTENTE_AGENT_NAME, "type": "agent_reference"}},
-    )
+    try:
+        response = assistant_client.responses.create(
+            input=[{"role": "user", "content": prompt}],
+            extra_body={"agent": {"name": ASISTENTE_AGENT_NAME, "type": "agent_reference"}},
+        )
+        text = getattr(response, "output_text", "") or ""
+        usage = _normalize_usage(response)
+    except Exception:
+        text = _build_spanish_fallback_from_catalog(
+            tramite_nombre=tramite_nombre,
+            descripcion=descripcion,
+        )
+        ms = int((time.time() - start) * 1000)
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        return text.strip(), ms, usage
 
-    text = getattr(response, "output_text", "") or ""
+    if _looks_like_refusal(text) or _looks_like_english_text(text):
+        text = _build_spanish_fallback_from_catalog(
+            tramite_nombre=tramite_nombre,
+            descripcion=descripcion,
+        )
+
     ms = int((time.time() - start) * 1000)
-    usage = _normalize_usage(response)
     return text.strip(), ms, usage
 
 
@@ -171,6 +224,17 @@ def build_local_asistente_answer(tramite_nombre: str, descripcion: str) -> str:
         "Si quieres, te indico los pasos concretos para tu caso (documentos, órgano y presentación).",
     ])
     return "\n".join(lines)
+
+
+def _build_spanish_fallback_from_catalog(tramite_nombre: str, descripcion: Optional[str]) -> str:
+    local = build_local_asistente_answer(tramite_nombre, descripcion=descripcion or "")
+    marker = "Información orientativa:"
+    if marker in local:
+        _, _, details = local.partition(marker)
+        trimmed = details.strip()
+        if trimmed:
+            return trimmed
+    return local
 
 
 def _normalize_binary_answer(text: Optional[str]) -> Optional[str]:
