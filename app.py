@@ -75,6 +75,70 @@ def get_tramite_descripcion(tramite: str, hits=None) -> str:
     return ""
 
 
+EXAMPLE_QUESTIONS = [
+    {
+        "icon": "📄",
+        "title": "Reclamar una deuda",
+        "description": "Te explico qué procedimiento corresponde según el tipo de deuda.",
+        "question": "Quiero reclamar una deuda, ¿qué trámite me corresponde?",
+    },
+    {
+        "icon": "🛡️",
+        "title": "Abrir una tutela",
+        "description": "Te indico qué procedimiento corresponde para solicitar la constitución de una tutela.",
+        "question": "¿Qué documentos presento para abrir una tutela?",
+    },
+    {
+        "icon": "🏦",
+        "title": "Proteger bienes de persona con discapacidad",
+        "description": "Te explico cómo solicitar medidas judiciales para proteger el patrimonio de un familiar con discapacidad.",
+        "question": "¿Cómo solicitar medidas para proteger los bienes de un familiar con discapacidad?",
+    },
+    {
+        "icon": "⚖️",
+        "title": "Ejecutar un auto de monitorio",
+        "description": "Te indico qué trámite corresponde para iniciar la ejecución tras un procedimiento monitorio.",
+        "question": "Necesito iniciar la ejecución del auto del monitorio, ¿qué debo hacer?",
+    },
+]
+
+
+def queue_example_question(question: str):
+    create_and_switch()
+    st.session_state["queued_user_text"] = question
+
+
+def render_home_intro():
+    st.markdown(
+        """
+        <div class="home-hero">
+            <h1>Asistente de Trámites</h1>
+            <p>
+                Soy un asistente virtual de trámites legales.
+                Hazme preguntas relacionadas con tu situación y te orientaré
+                sobre el procedimiento adecuado.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for start in range(0, len(EXAMPLE_QUESTIONS), 2):
+        row_cols = st.columns([1.2, 3.8, 3.8, 1.2])
+        row_items = EXAMPLE_QUESTIONS[start : start + 2]
+        for offset, item in enumerate(row_items):
+            idx = start + offset
+            with row_cols[offset + 1]:
+                label = (
+                    f'{item["icon"]}\n\n'
+                    f'**{item["title"]}**\n\n'
+                    f'{item["description"]}'
+                )
+                if st.button(label, key=f"example_q_{idx}", use_container_width=True):
+                    queue_example_question(item["question"])
+                    st.rerun()
+
+
 ensure_session_state()
 
 with st.sidebar:
@@ -120,7 +184,35 @@ with st.sidebar:
 
 active = get_active()
 
-st.title(APP_TITLE)
+# ============================================
+# Inicialización de estado de desambiguación
+# ============================================
+
+if "flow_state" not in active:
+    active["flow_state"] = "idle"
+
+if "ambiguous_hits" not in active:
+    active["ambiguous_hits"] = None
+
+if "ambig_iter" not in active:
+    active["ambig_iter"] = 0
+
+if "ultima_pregunta" not in active:
+    active["ultima_pregunta"] = None
+
+if "mensaje_base" not in active:
+    active["mensaje_base"] = None
+
+show_home_intro = (
+    active["flow_state"] == "idle"
+    and not any(m.get("role") == "user" for m in active.get("messages", []))
+    and not st.session_state.get("queued_user_text")
+)
+
+if show_home_intro:
+    render_home_intro()
+else:
+    st.title(APP_TITLE)
 
 for msg in active["messages"]:
     role = normalize_role(msg.get("role", "user"))
@@ -142,30 +234,15 @@ for msg in active["messages"]:
                     umbral_ambiguedad=msg["debug"]["umbral"],
                 )
 
-# ============================================
-# Inicialización de estado de desambiguación
-# ============================================
-
-if "flow_state" not in active:
-    active["flow_state"] = "idle"
-
-if "ambiguous_hits" not in active:
-    active["ambiguous_hits"] = None
-
-if "ambig_iter" not in active:
-    active["ambig_iter"] = 0
-
-if "ultima_pregunta" not in active:
-    active["ultima_pregunta"] = None
-
-if "mensaje_base" not in active:
-    active["mensaje_base"] = None
-
 # ==========================================================
 # 🔵 BLOQUE A — EMBEDDINGS + SCORE + RELEVANCIA
 # ==========================================================
 
 user_text = st.chat_input("Escribe tu consulta…", key="main_chat_input")
+if not user_text:
+    queued_question = st.session_state.pop("queued_user_text", None)
+    if queued_question:
+        user_text = queued_question
 
 if user_text:
 

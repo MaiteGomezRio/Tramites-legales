@@ -256,3 +256,136 @@ a:hover {
 h1 {
   margin-bottom: 0.3rem;
 }
+
+/* =========================
+   HOME INTRO
+   ========================= */
+
+.home-hero {
+  text-align: center;
+  max-width: 820px;
+  margin: 0.7rem auto 1.25rem auto;
+}
+
+.home-hero h1 {
+  margin: 0;
+  color: #084729;
+  font-size: clamp(2.2rem, 3.4vw, 3.7rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.home-hero p {
+  margin: 0.8rem 0 0 0;
+  color: #576474;
+  line-height: 1.55;
+  font-size: clamp(1rem, 1.6vw, 1.2rem);
+}
+
+.st-key-example_q_0,
+.st-key-example_q_1,
+.st-key-example_q_2,
+.st-key-example_q_3 {
+  margin-top: 0.6rem;
+}
+
+.st-key-example_q_0 button,
+.st-key-example_q_1 button,
+.st-key-example_q_2 button,
+.st-key-example_q_3 button {
+  height: 124px;
+  min-height: 124px;
+  max-height: 124px;
+  border-radius: 10px !important;
+  border: 2px solid #027D3A !important;
+  background: #ffffff !important;
+  padding: 0.8rem 0.9rem !important;
+  justify-content: center !important;
+  align-items: center !important;
+  text-align: center !important;
+  overflow: hidden;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+div[class*="st-key-example_q_"] button > div {
+  width: 100% !important;
+  justify-content: center !important;
+}
+
+div[class*="st-key-example_q_"] button [data-testid="stMarkdownContainer"] {
+  width: 100% !important;
+}
+
+div[class*="st-key-example_q_"] button [data-testid="stMarkdownContainer"] p {
+  width: 100% !important;
+  text-align: center !important;
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+}
+
+div[class*="st-key-example_q_"] button [data-testid="stMarkdownContainer"] p:nth-of-type(1) {
+  margin-bottom: 0.25rem !important;
+}
+
+div[class*="st-key-example_q_"] button [data-testid="stMarkdownContainer"] p:nth-of-type(2) {
+  min-height: 2.95rem;
+}
+
+.st-key-example_q_0 button:hover,
+.st-key-example_q_1 button:hover,
+.st-key-example_q_2 button:hover,
+.st-key-example_q_3 button:hover {
+  border-color: #027D3A !important;
+  box-shadow: 0 8px 24px rgba(2, 125, 58, 0.18);
+  transform: translateY(-1px);
+}
+
+.st-key-example_q_0 button:focus,
+.st-key-example_q_1 button:focus,
+.st-key-example_q_2 button:focus,
+.st-key-example_q_3 button:focus {
+  border-color: #027D3A !important;
+  box-shadow: 0 0 0 3px rgba(2, 125, 58, 0.25) !important;
+}
+
+.st-key-example_q_0 button p,
+.st-key-example_q_1 button p,
+.st-key-example_q_2 button p,
+.st-key-example_q_3 button p {
+  margin: 0 !important;
+  white-space: normal !important;
+  line-height: 1.35;
+  color: #5d6876 !important;
+  font-weight: 500;
+  font-size: 0.97rem;
+}
+
+.st-key-example_q_0 button p strong,
+.st-key-example_q_1 button p strong,
+.st-key-example_q_2 button p strong,
+.st-key-example_q_3 button p strong {
+  display: block;
+  margin-bottom: 0.32rem;
+  color: #0c4b2d !important;
+  font-size: 1.1rem;
+  font-weight: 800;
+  text-align: center !important;
+}
+
+@media (max-width: 900px) {
+  .home-hero {
+    margin-top: 0.35rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .st-key-example_q_0 button,
+  .st-key-example_q_1 button,
+  .st-key-example_q_2 button,
+  .st-key-example_q_3 button {
+    height: 112px;
+    min-height: 112px;
+    max-height: 112px;
+    padding: 0.75rem 0.7rem !important;
+  }
+}
