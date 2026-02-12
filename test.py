@@ -1157,7 +1157,7 @@ if user_text:
     # ❗ CASO 5: ERROR
     # ─────────────────────────
     else:
-        mensaje = resultado.get("mensaje", "Ha ocurrido un error inesperado.")
+        mensaje = resultado.get("mensaje", "Ha ocurrido un error inesperado!")
 
         active["messages"].append({
             "role": "assistant",
@@ -1167,3 +1167,4 @@ if user_text:
 
     _attach_token_trace_to_last_assistant_message(active, query_token_trace)
     st.rerun()
+
