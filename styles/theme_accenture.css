@@ -81,6 +81,10 @@ section[data-testid="stSidebar"] button:active {
   box-shadow: 0 0 0 2px var(--focus-ring) !important;
 }
 
+section[data-testid="stSidebar"] hr {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
 /* =========================
    SIDEBAR COLLAPSE BUTTON
    ========================= */
