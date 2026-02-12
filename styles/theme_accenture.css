@@ -1,0 +1,254 @@
+:root {
+  /* Brand */
+  --primary: #027D3A;          /* verde principal */
+  --primary-soft: #4e9e72;     /* hover / glow */
+  --primary-soft2: #d4d4d4;     /* hover / glow */
+  --primary-dark: #003c1d;     /* texto oscuro */
+  --primary-dark2: #01170a;  
+
+  /* Backgrounds */
+  --bg-app: #F0FDF4;           /* fondo general */
+  --bg-pill: #ECFDF5;          /* píldora */
+  --bg-input: #D1FAE5;         /* textarea */
+  --bg-sidebar: #ECFDF5;
+
+  /* Borders */
+  --border-soft: #A7F3D0;
+
+  /* Text */
+  --text-main: #064E3B;
+  --text-muted: #ffffff;
+
+  /* Effects */
+  --focus-ring: rgba(22, 163, 74, 0.35);
+}
+
+html, body, [class*="css"] {
+  background: var(--primary-dark);
+  color: var(--bg-app);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+header[data-testid="stHeader"] {
+  background: transparent;
+}
+
+section.main > div {
+  padding-top: 0.8rem;
+}
+
+/* =========================
+   SIDEBAR – ACCENTURE
+   ========================= */
+
+section[data-testid="stSidebar"] {
+  background: var(--primary);
+}
+
+/* Texto general del sidebar (NO botones) */
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] div {
+  color: var(--text-muted);
+}
+
+/* Botones del sidebar */
+section[data-testid="stSidebar"] button {
+  background: var(--bg-app) !important;
+  border: 1px solid var(--primary-soft) !important;
+  border-radius: 10px;
+}
+
+/* Texto del botón */
+section[data-testid="stSidebar"] button p {
+  color: var(--text-main) !important;
+  font-weight: 500;
+}
+
+/* Hover botones */
+section[data-testid="stSidebar"] button:hover {
+  background: var(--primary-soft2) !important;
+}
+
+section[data-testid="stSidebar"] button:hover p {
+  color: white !important;
+}
+
+/* Botones activos / focus */
+section[data-testid="stSidebar"] button:focus,
+section[data-testid="stSidebar"] button:active {
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--focus-ring) !important;
+}
+
+/* =========================
+   SIDEBAR COLLAPSE BUTTON
+   ========================= */
+
+/* Sidebar abierto */
+section[data-testid="stSidebar"][aria-expanded="true"]
+div[data-testid="stSidebarCollapseButton"] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  visibility: visible !important;
+}
+
+/* Sidebar cerrado */
+section[data-testid="stSidebar"][aria-expanded="false"]
+div[data-testid="stSidebarCollapseButton"] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  visibility: visible !important;
+}
+
+/* Eliminar cualquier transición de ocultación */
+div[data-testid="stSidebarCollapseButton"] {
+  transition: none !important;
+}
+
+/* Botón */
+div[data-testid="stSidebarCollapseButton"]
+button[data-testid="stBaseButton-headerNoPadding"] {
+  background-color: var(--bg-app) !important;
+}
+
+/* Icono */
+div[data-testid="stSidebarCollapseButton"]
+span[data-testid="stIconMaterial"] {
+  color: var(--primary-dark) !important;
+}
+
+/* =========================
+   CHAT INPUT
+   ========================= */
+
+/* Contenedor externo */
+div[data-testid="stChatInput"] {
+  background: var(--primary-soft);
+  border: none !important;
+  border-radius: 999px;
+  padding: 6px 6px;
+
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* TODOS los wrappers internos */
+div[data-testid="stChatInput"] div {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Wrapper funcional: flex */
+div[data-testid="stChatInput"] > div {
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+}
+
+/* Textarea */
+div[data-testid="stChatInput"] textarea {
+  flex: 1 !important;
+
+  background-color: var(--primary-soft) !important; /* COLOR DEL INPUT */
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+
+  color: var(--text-muted) !important;
+  caret-color: var(--text-muted) !important;
+
+  font-size: 1.1rem;
+  padding: 10px 14px;
+  resize: none;
+
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* Focus textarea */
+div[data-testid="stChatInput"] textarea:focus,
+div[data-testid="stChatInput"] textarea:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Placeholder */
+div[data-testid="stChatInput"] textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Autofill Chrome */
+div[data-testid="stChatInput"] textarea:-webkit-autofill {
+  background-color: var(--primary-soft) !important;
+  -webkit-box-shadow: 0 0 0px 1000px var(--primary-soft) inset !important;
+  -webkit-text-fill-color: var(--text-muted) !important;
+}
+
+/* Botón enviar */
+div[data-testid="stChatInput"] button {
+  background: var(--primary-dark) !important;
+  border-radius: 999px;
+  width: 38px;
+  height: 38px;
+  border: none !important;
+  margin-left: 8px;
+
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Icono */
+div[data-testid="stChatInput"] button svg {
+  fill: white !important;
+}
+
+/* ÚNICO foco visible */
+div[data-testid="stChatInput"]:focus-within {
+  box-shadow: 0 0 0 2px var(--primary-dark) !important;
+}
+
+/* =========================
+   CHAT MESSAGES
+   ========================= */
+
+/* Texto de los mensajes */
+div[data-testid="stChatMessage"] p {
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+/* Evitar huecos raros en líneas cortas */
+div[data-testid="stChatMessage"] p:last-child {
+  text-align-last: left;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.80rem;
+  border: 1px solid var(--primary-dark);
+  background: var(--primary);
+  color: var(--text-main);
+}
+
+.badge-ok   { color: #A100FF; }
+.badge-warn { color: #FBBF24; }
+.badge-no   { color: #F87171; }
+
+a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1 {
+  margin-bottom: 0.3rem;
+}
