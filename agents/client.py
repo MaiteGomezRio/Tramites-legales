@@ -9,6 +9,7 @@ from config import (
     SEARCH_ENDPOINT,
     SEARCH_QUERY_KEY,
     INDEX_NAME,
+    ASISTENTE_MODE,
     AIPROJECT_ENDPOINT,
     ASISTENTE_AGENT_NAME,
     CLARIFICADOR_AGENT_NAME,
@@ -45,14 +46,16 @@ def get_agent(agent_name: str):
 
 @st.cache_resource(show_spinner="Cargando agente…")
 def load_agents():
-    return {
+    agents = {
         # "clasificador": get_agent(CLASIFICADOR_AGENT_NAME),
-        "asistente": get_agent(ASISTENTE_AGENT_NAME),
         "desambiguador": get_agent(DESAMBIGUADOR_AGENT_NAME),
         "clarificador": get_agent(CLARIFICADOR_AGENT_NAME),
         "relevancia": get_agent(RELEVANCIA_AGENT_NAME),
         "preguntas": get_agent(PREGUNTAS_AGENT_NAME),
     }
+    if ASISTENTE_MODE == "agent":
+        agents["asistente"] = get_agent(ASISTENTE_AGENT_NAME)
+    return agents
 
 @st.cache_resource(show_spinner=False)
 def get_search_client():

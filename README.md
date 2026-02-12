@@ -68,6 +68,16 @@ AZURE_DESAMBIGUADOR_AGENT_NAME=DesambiguadorTramites
 AZURE_RELEVANCIA_AGENT_NAME=RelevanciaRespuestaTramites
 AZURE_CLARIFICADOR_AGENT_NAME=ClarificadorTramites
 
+# Modo de respuesta final
+# agent = usa el agente AsistenteTramites de Foundry
+# local = sin llamada al agente asistente (tokens muy bajos)
+ASISTENTE_MODE=agent
+ASISTENTE_LOCAL_MAX_CHARS=1600
+
+# Optimización de tokens en desambiguación (opcionales)
+DESAMBIGUADOR_MAX_CANDIDATOS=3
+DESAMBIGUADOR_MAX_DESC_CHARS=420
+
 # Azure OpenAI (embeddings)
 AZURE_OPENAI_API_KEY=<tu_api_key>
 AZURE_OPENAI_BASE_URL=https://<tu-recurso>.openai.azure.com/openai/v1/

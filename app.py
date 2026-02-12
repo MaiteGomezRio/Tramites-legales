@@ -46,6 +46,23 @@ load_css(CSS_PATH)
 catalog_df, embeddings = load_catalog_and_embeddings()
 agents = load_agents()
 
+
+def get_tramite_descripcion(tramite: str, hits=None) -> str:
+    target = (tramite or "").strip().casefold()
+    if not target:
+        return ""
+
+    if hits is not None and len(hits) > 0:
+        for _, row in hits.iterrows():
+            if str(row.get("Trámite", "")).strip().casefold() == target:
+                return str(row.get("Descripción", "") or "")
+
+    matches = catalog_df[catalog_df["Trámite"].astype(str).str.strip().str.casefold() == target]
+    if not matches.empty:
+        return str(matches.iloc[0].get("Descripción", "") or "")
+    return ""
+
+
 ensure_session_state()
 
 with st.sidebar:
@@ -189,16 +206,13 @@ if user_text:
         # ------------------------------------------------------
         elif tipo_respuesta == "ES_RESPUESTA":
 
-            mensaje_actual = (
-                f"{active['mensaje_base']}\n\n"
-                f"Respuesta del ciudadano: {user_text}"
-            )
-
             with st.spinner("Identificando posibles trámites…"):
                 salida_desambiguador, _, desambiguador_usage = call_agente_desambiguador(
-                    message=mensaje_actual,
+                    message=active["mensaje_base"],
                     ambiguous_hits=active["ambiguous_hits"],
-                    agents=agents
+                    agents=agents,
+                    pregunta_sistema=active["ultima_pregunta"],
+                    respuesta_usuario=user_text,
                 )
             usage_steps.append(("desambiguador", desambiguador_usage))
 
@@ -206,6 +220,7 @@ if user_text:
             if salida_desambiguador.startswith("CLASIFICACION:"):
 
                 tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+                descripcion_tramite = get_tramite_descripcion(tramite, hits=active.get("ambiguous_hits"))
 
                 active["flow_state"] = "idle"
                 active["ambiguous_hits"] = None
@@ -215,7 +230,11 @@ if user_text:
 
                 with st.spinner("Generando información del trámite..."):
                     try:
-                        rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
+                        rag_text, _, asistente_usage = call_asistente_tramites(
+                            tramite,
+                            agents=agents,
+                            descripcion=descripcion_tramite,
+                        )
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                         asistente_usage = None
@@ -346,10 +365,15 @@ if user_text:
         if n_ambiguous <= 1:
 
             tramite = hits.iloc[0]["Trámite"]
+            descripcion_tramite = str(hits.iloc[0].get("Descripción", "") or "")
 
             with st.spinner("Generando información del trámite..."):
                 try:
-                    rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
+                    rag_text, _, asistente_usage = call_asistente_tramites(
+                        tramite,
+                        agents=agents,
+                        descripcion=descripcion_tramite,
+                    )
                 except Exception as e:
                     rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                     asistente_usage = None
@@ -390,10 +414,15 @@ if user_text:
             if salida_desambiguador.startswith("CLASIFICACION:"):
 
                 tramite = salida_desambiguador.replace("CLASIFICACION:", "").strip()
+                descripcion_tramite = get_tramite_descripcion(tramite, hits=hits)
 
                 with st.spinner("Generando información del trámite..."):
                     try:
-                        rag_text, _, asistente_usage = call_asistente_tramites(tramite, agents=agents)
+                        rag_text, _, asistente_usage = call_asistente_tramites(
+                            tramite,
+                            agents=agents,
+                            descripcion=descripcion_tramite,
+                        )
                     except Exception as e:
                         rag_text = f"No se ha podido recuperar la información del trámite. {e}"
                         asistente_usage = None
