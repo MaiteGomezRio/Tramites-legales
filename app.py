@@ -356,10 +356,16 @@ if "ultima_pregunta" not in active:
 if "mensaje_base" not in active:
     active["mensaje_base"] = None
 
+user_text = st.chat_input("Escribe tu consulta…", key="main_chat_input")
+if not user_text:
+    queued_question = st.session_state.pop("queued_user_text", None)
+    if queued_question:
+        user_text = queued_question
+
 show_home_intro = (
     active["flow_state"] == "idle"
     and not any(m.get("role") == "user" for m in active.get("messages", []))
-    and not st.session_state.get("queued_user_text")
+    and not user_text
 )
 
 if show_home_intro:
@@ -390,12 +396,6 @@ for msg in active["messages"]:
 # ==========================================================
 # 🔵 BLOQUE A — EMBEDDINGS + SCORE + RELEVANCIA
 # ==========================================================
-
-user_text = st.chat_input("Escribe tu consulta…", key="main_chat_input")
-if not user_text:
-    queued_question = st.session_state.pop("queued_user_text", None)
-    if queued_question:
-        user_text = queued_question
 
 if user_text:
 
