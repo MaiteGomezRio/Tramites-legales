@@ -1,0 +1,342 @@
+ASISTENTE DE TRAMITES LEGALES
+Explicacion tecnica y funcional (version para manager)
+
+==================================================
+1) QUE ES ESTE PROYECTO
+==================================================
+Este proyecto es una aplicacion web en Streamlit que ayuda a clasificar consultas
+ciudadanas sobre tramites legales y judiciales.
+
+No sustituye asesoria legal formal. Su funcion es:
+- Identificar el tramite mas probable segun el mensaje del usuario.
+- Pedir aclaraciones cuando hay ambiguedad.
+- Devolver una explicacion orientativa del tramite detectado.
+
+El sistema combina:
+- Embeddings para busqueda semantica.
+- Azure AI Search para recuperar candidatos.
+- Agentes de Azure AI Foundry para relevancia, desambiguacion y clarificacion.
+
+==================================================
+2) OBJETIVO DE NEGOCIO
+==================================================
+Reducir tiempo de atencion y aumentar calidad en primera respuesta para consultas
+de tramites legales, con una experiencia guiada:
+- Si hay un tramite claro: responde directamente.
+- Si hay dudas: hace preguntas precisas.
+- Si esta fuera de ambito: redirige y evita respuestas incorrectas.
+
+==================================================
+3) ARQUITECTURA GENERAL
+==================================================
+La arquitectura esta separada por modulos:
+
+1. Capa de interfaz (UI)
+- app.py
+- ui/styles.py
+- styles/theme_accenture.css
+
+2. Capa de estado conversacional
+- conversations/state.py
+
+3. Capa de logica y utilidades
+- core/retrieval.py
+- core/helpers.py
+
+4. Capa de integracion con Azure/OpenAI
+- agents/client.py
+- agents/services.py
+- config.py
+
+5. Datos
+- descripcion-tramites.xlsx
+
+6. Scripts auxiliares / legado
+- crear_embeddings.py (carga/indice vectorial)
+- test.py (version monolitica antigua, no es suite de tests automatizados)
+
+==================================================
+4) FLUJO END-TO-END (COMO FUNCIONA UNA CONSULTA)
+==================================================
+Paso 1. Inicializacion
+- app.py configura Streamlit, carga estilos, carga catalogo y clientes de agentes.
+- Se inicializa el estado de conversaciones (multi-chat).
+
+Paso 2. Entrada del usuario
+- El usuario escribe un mensaje en el chat.
+- Se guarda en historial con timestamp.
+
+Paso 3. Control rapido de ambito
+- Reglas locales detectan consultas claramente fuera de legal/judicial.
+- Si esta fuera de ambito, se responde con mensaje de redireccion.
+
+Paso 4. Retrieval semantico
+- Se genera embedding de la consulta.
+- Se consulta Azure AI Search por similitud vectorial.
+- Se obtiene top de candidatos con score.
+
+Paso 5. Relevancia (cuando aplica)
+- Si score es bajo o hay senales de no-legal, se consulta agente de relevancia.
+- Si determina NO_RELEVANTE, el flujo termina como fuera de ambito.
+
+Paso 6. Decision por score y ambiguedad
+- Si score maximo es bajo: mensaje de no clasificacion.
+- Si hay un candidato dominante: clasificacion directa.
+- Si hay varios muy cercanos: desambiguacion con agente.
+
+Paso 7. Desambiguacion guiada
+- El desambiguador devuelve:
+  CLASIFICACION:<tramite>
+  o
+  PREGUNTA:<pregunta de aclaracion>
+- Si devuelve pregunta, el sistema entra en estado "esperando_respuesta".
+- Se permiten iteraciones limitadas (max 2) para no alargar indefinidamente.
+
+Paso 8. Respuesta final
+- Con tramite identificado, se llama al asistente de tramites.
+- Modo normal: agente "AsistenteTramites".
+- Modo fallback/local: resumen orientativo construido desde la descripcion del catalogo.
+- Se muestra respuesta final formateada.
+
+Paso 9. Trazabilidad
+- Se guarda uso de tokens por paso/agente.
+- Se puede abrir panel debug con candidatos y scores.
+
+==================================================
+5) DETALLE POR ARCHIVO
+==================================================
+
+[app.py]
+Orquestador principal de la aplicacion.
+Responsabilidades:
+- Render de interfaz principal y sidebar de conversaciones.
+- Manejo del flujo de clasificacion y desambiguacion.
+- Filtros de fuera de ambito (reglas + relevancia).
+- Parseo de salida del desambiguador.
+- Gestion de estados:
+  idle / esperando_respuesta.
+- Render de mensajes, debug y consumo de tokens.
+
+Puntos clave:
+- Define funciones de parsing robusto para salida de agentes.
+- Tiene preguntas de ejemplo para iniciar conversaciones.
+- Cierra conversacion cuando se identifica tramite final.
+
+[config.py]
+Configuracion central del sistema.
+Responsabilidades:
+- Variables de app (titulo, icono, layout, rutas de assets/CSS).
+- Nombres de agentes (por entorno).
+- Umbrales de negocio:
+  UMBRAL_RETRIEVAL
+  UMBRAL_AMBIGUEDAD
+  UMBRAL_SCORE_MINIMO
+- Mensajes estandar para score bajo/fuera de ambito/error.
+- Cliente OpenAI para embeddings.
+- Parametros de Azure Search.
+
+Nota importante:
+- Actualmente hay valores por defecto sensibles en codigo (API key/base_url).
+  Recomendacion: mover 100% a variables de entorno y secret manager.
+
+[agents/client.py]
+Inicializa y cachea clientes externos.
+Responsabilidades:
+- Crear AIProjectClient (Azure Foundry) con DefaultAzureCredential.
+- Resolver cliente OpenAI para ejecutar agentes por nombre.
+- Cargar agentes en cache:
+  desambiguador, clarificador, relevancia, preguntas, y opcional asistente.
+- Crear cliente de Azure Search.
+
+Ventaja:
+- Usa cache de Streamlit para evitar recrear clientes en cada mensaje.
+
+[agents/services.py]
+Capa de llamadas a agentes y logica de servicio.
+Responsabilidades:
+- Llamadas a agentes:
+  call_agente_relevancia
+  call_agente_desambiguador
+  call_agente_preguntas
+  call_agente_clarificador
+  call_asistente_tramites
+- Normalizacion de uso de tokens.
+- Construccion de prompts compactos para desambiguacion.
+- Fallbacks defensivos:
+  - Si falla el asistente.
+  - Si responde en ingles.
+  - Si devuelve rechazo no util.
+
+Valor:
+- Mejora robustez y control de calidad de respuestas finales.
+
+[core/retrieval.py]
+Motor semantico de recuperacion de candidatos.
+Responsabilidades:
+- Embedding de consulta.
+- Query vectorial en Azure AI Search.
+- Construccion de DataFrame de hits (tramite, descripcion, score).
+- Filtrado por gap de score y deduplicacion.
+- Carga de catalogo desde Excel (cacheada).
+- Render de panel debug con barras de score.
+
+Nota:
+- Tambien calcula embeddings del catalogo para analisis de similitud interna.
+- Imprime top pares similares en consola para inspeccion.
+
+[core/helpers.py]
+Utilidades generales.
+Responsabilidades:
+- Parseo robusto de JSON parcial.
+- Timestamps.
+- Normalizacion de roles.
+- Construccion de resumen de tokens multi-agente.
+- Render del expander de tokens en UI.
+
+[conversations/state.py]
+Estado de multi-conversacion en sesion Streamlit.
+Responsabilidades:
+- Crear chat nuevo.
+- Garantizar estado inicial.
+- Obtener y cambiar chat activo.
+- Borrar chat individual o todos.
+
+Estructura base de conversacion:
+- id, title, messages, identified_tramite, closed, created_at, etc.
+
+[ui/styles.py]
+Carga el CSS personalizado desde archivo local y lo inyecta en Streamlit.
+
+[styles/theme_accenture.css]
+Tema visual de la aplicacion.
+Incluye:
+- Variables de color corporativas.
+- Estilos de sidebar y botones.
+- Estilos de chat input y mensajes.
+- Layout de home con tarjetas de ejemplo.
+- Ajustes responsive para movil.
+
+[descripcion-tramites.xlsx]
+Catalogo maestro de tramites.
+Columnas esperadas:
+- Tramite
+- Descripcion
+
+Resumen del archivo actual:
+- Hoja: "Tramites. Descripcion F. (2)"
+- Filas totales: 49 (incluye cabecera)
+- Tramites no vacios: 47
+
+[crear_embeddings.py]
+Script operativo para indexar tramites en Azure AI Search.
+Responsabilidades:
+- Leer dataset local.
+- Generar embedding por tramite+descripcion.
+- Validar integridad de vectores.
+- Subir documentos por lotes al indice.
+
+Riesgo:
+- Tiene claves hardcodeadas. Debe restringirse su uso y mover secretos a entorno.
+
+[test.py]
+Archivo grande monolitico con una version anterior de la app.
+No es un test automatizado formal (pytest/unittest).
+Utilidad actual:
+- Referencia historica/prototipo.
+Recomendacion:
+- Renombrar o mover a carpeta de legacy para evitar confusion.
+
+[assets/*]
+Recursos visuales:
+- Logos y avatares para interfaz.
+
+[__init__.py en raiz y paquetes]
+Archivos vacios para marcar paquetes Python.
+
+==================================================
+6) ESTADO CONVERSACIONAL Y EXPERIENCIA DE USUARIO
+==================================================
+La app soporta multiples conversaciones en sidebar:
+- Nuevo chat.
+- Abrir chats anteriores.
+- Borrar uno o todos.
+- Marcar chat cerrado cuando ya hay tramite identificado.
+
+Estados principales del flujo:
+- idle: flujo normal.
+- esperando_respuesta: el sistema lanzo pregunta de desambiguacion y espera respuesta.
+
+Esto permite conversacion guiada, no solo clasificacion de un mensaje aislado.
+
+==================================================
+7) UMBRALES CLAVE (LOGICA DE DECISION)
+==================================================
+Los tres umbrales mas importantes son:
+
+1. UMBRAL_RETRIEVAL
+- Controla cuantos candidatos cercanos se conservan segun diferencia de score.
+
+2. UMBRAL_AMBIGUEDAD
+- Si varios candidatos estan muy cerca del top, se activa desambiguacion.
+
+3. UMBRAL_SCORE_MINIMO
+- Si el mejor score queda por debajo, se considera insuficiente para clasificar.
+
+Impacto:
+- Umbrales mas estrictos: menos falsos positivos, mas preguntas/no-clasificados.
+- Umbrales mas laxos: mas clasificacion directa, mayor riesgo de error.
+
+==================================================
+8) ROBUSTEZ Y SEGURIDAD FUNCIONAL
+==================================================
+Mecanismos presentes:
+- Deteccion de fuera de ambito.
+- Agente de relevancia como doble control.
+- Parseo defensivo de salida de agentes.
+- Fallback local cuando el asistente falla.
+- Limite de intentos de desambiguacion.
+
+Riesgos actuales a priorizar:
+- Secretos hardcodeados en algunos archivos.
+- Archivo test.py puede confundir mantenimiento.
+- Falta una suite automatizada de tests de regresion.
+
+==================================================
+9) RECOMENDACIONES (ROADMAP CORTO)
+==================================================
+Prioridad alta:
+1) Seguridad
+- Eliminar claves embebidas en codigo.
+- Usar .env + Azure Key Vault/secret manager.
+
+2) Calidad de software
+- Crear tests unitarios para:
+  parse_desambiguador_output
+  resolve_candidate_from_text
+  normalize_preguntas_output
+  filtros de ambito.
+
+3) Operacion
+- Mover test.py a legacy/ y documentar que app oficial es app.py modular.
+- Versionar umbrales por entorno (dev/staging/prod).
+
+Prioridad media:
+4) Observabilidad
+- Logging estructurado de decisiones (score, tipo flujo, agente usado).
+- Metricas de tasa de clasificacion directa vs desambiguada.
+
+5) Producto
+- Añadir feedback del usuario sobre utilidad de respuesta.
+- Añadir FAQ de ejemplos por tipo de tramite.
+
+==================================================
+10) MENSAJE EJECUTIVO PARA PRESENTACION
+==================================================
+Este sistema ya tiene una base solida para atencion inicial de tramites:
+- Arquitectura modular.
+- Flujo guiado con desambiguacion inteligente.
+- Control de ambito y trazabilidad de tokens.
+
+Con mejoras de seguridad (secretos), pruebas automatizadas y limpieza de legado,
+queda en buena posicion para escalar en produccion con mayor confianza.
+
